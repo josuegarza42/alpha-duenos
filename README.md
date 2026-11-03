@@ -2,6 +2,8 @@
 
 Una mesa de trabajo para acordar las responsabilidades de los tres socios de Alpha Gym: Josue Garza, Brandon y Toño.
 
+Página: https://josuegarza42.github.io/alpha-duenos/
+
 ## Qué permite
 
 - Acceso con una clave privada por socio, verificada en la base de datos.
@@ -43,6 +45,8 @@ node --check site/pdf.js
 ```
 
 Las pruebas ejecutan el SQL de producción sin cambios en Postgres mediante PGlite, con la extensión real `pgcrypto` y el rol `anon`. Cubren identidad, permisos, mayoría, voto único, cambios y retiros, cancelación, versiones inmutables y ausencia de credenciales en las exportaciones.
+
+El administrador con los accesos locales puede ejecutar `npm run verify:live` para comprobar los tres accesos contra Supabase, el cierre de sesión y que el esquema privado no esté expuesto. Esta verificación no crea propuestas ni votos.
 
 Para una vista previa desechable, abrir dos terminales:
 
