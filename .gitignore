@@ -1,0 +1,12 @@
+.env
+.private/
+data/
+*.sqlite3*
+__pycache__/
+*.py[cod]
+.venv/
+.railway/
+tmp/
+output/
+.DS_Store
+node_modules/
