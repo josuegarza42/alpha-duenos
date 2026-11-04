@@ -13,4 +13,4 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - run: npm test
-      - run: node --check site/app.js && node --check site/pdf.js
+      - run: node --check site/app.js && node --check site/tracking.js && node --check site/pdf.js

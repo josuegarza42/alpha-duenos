@@ -6,7 +6,7 @@ const {readFileSync}=require("node:fs");
 const {resolve}=require("node:path");
 const {createHash}=require("node:crypto");
 const partners=[{slug:"josue",name:"Josue Garza"},{slug:"brandon",name:"Brandon"},{slug:"tono",name:"Toño"}];
-const testKey=slug=>`preview-access-only-${slug}-not-production`;
+const testKey=slug=>`test-${slug}`;
 const schema=()=>readFileSync(resolve(__dirname,"../supabase/schema.sql"),"utf8");
 async function openDatabase(){
   const db=new PGlite({extensions:{pgcrypto}});
@@ -25,7 +25,7 @@ async function rpc(db,action,token="",payload={}){
 async function loginAll(db){
   const tokens={};for(const p of partners){const r=await rpc(db,"login","",{key:testKey(p.slug)});if(r.error)throw new Error(r.error);tokens[p.slug]=r.token;}return tokens;
 }
-const sample=(overrides={})=>({title:"Preparar el corte mensual",description:"Reunir ingresos, egresos y comprobantes del periodo.",owner:"josue",category:"Finanzas",frequency:"Mensual",deliverable:"Corte con comprobantes y saldo conciliado.",scope:"Como socio",...overrides});
+const sample=(overrides={})=>({title:"Preparar el corte mensual",description:"Reunir ingresos, egresos y comprobantes del periodo.",owner:"josue",category:"Finanzas",frequency:"Mensual",deliverable:"Corte con comprobantes y saldo conciliado.",scope:"Como socio",penalty:"Reponer la entrega en 48 horas y explicar el retraso.",metric:{name:"Entregas a tiempo",target:100,unit:"%",direction:"gte"},...overrides});
 async function seedDemo(db){
   const tokens=await loginAll(db);
   const examples=[sample(),sample({title:"Coordinar la facturación SAT",owner:"brandon",category:"Fiscal",frequency:"Mensual y por solicitud",description:"Revisar las solicitudes y emitir las facturas correspondientes.",deliverable:"Facturas emitidas y relación de solicitudes atendidas."}),sample({title:"Revisar el equipo del gimnasio",owner:"tono",category:"Operación",frequency:"Semanal",description:"Detectar fallas y coordinar su atención.",deliverable:"Lista de revisión y reporte de mantenimiento."})];

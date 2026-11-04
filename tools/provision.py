@@ -36,4 +36,7 @@ for p in config["partners"]:
 page='<!doctype html><html lang="es"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Accesos privados · Alpha Dueños</title><style>body{font:15px system-ui;max-width:900px;margin:40px auto;padding:0 22px;background:#f6f5f0;color:#173d30}h1{font-size:28px}section{background:white;padding:22px;border:1px solid #d7ddcf;border-radius:12px;margin:20px 0}label{display:block;margin-top:16px;font-size:12px}textarea,input{box-sizing:border-box;width:100%;padding:12px;margin-top:7px;border:1px solid #c9d2c1;border-radius:6px;font:13px monospace}a{color:#173d30}</style><h1>Accesos privados · Alpha Dueños</h1><p>Entrega a cada socio únicamente su propio acceso. Quien tenga la clave podrá actuar y votar como ese socio.</p>'+''.join(cards)+'</html>'
 pagefile=private/"accesos-socios.html"
 pagefile.write_text(page);pagefile.chmod(0o600)
+textfile=private/"ACCESOS ALPHA DUENOS.txt"
+textfile.write_text("ALPHA DUEÑOS · ACCESOS PRIVADOS\n\nPágina: "+site+"\nLos tres tienen acceso administrador. Cada clave identifica los votos de un socio.\n\n"+"\n\n".join(p["name"]+"\nClave: "+p["key"]+"\nEnlace: "+site+"#clave="+quote(p["key"]) for p in config["partners"])+"\n")
+textfile.chmod(0o600)
 print("3 accesos preparados en .private/accesos-socios.html y configuración en .private/supabase-setup.sql. No se mostraron claves en la salida.")

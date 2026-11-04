@@ -30,7 +30,7 @@ window.buildAlphaPdf=async function(agreement){
   text("Acuerdo de responsabilidades",{size:22,bold:true,after:4,lineHeight:10});
   const stamp=new Intl.DateTimeFormat("es-MX",{dateStyle:"long",timeStyle:"short",timeZone:"America/Mexico_City"}).format(new Date(agreement.created_at));
   text(`Versión ${agreement.version} · ${stamp}, Ciudad de México`,{size:8,color:muted,after:4});rule();
-  text("Este documento reúne las responsabilidades operativas aprobadas por mayoría de dos de los tres socios. Cada función indica su titular, frecuencia y entregable.");
+  text("Este documento reúne las responsabilidades operativas aprobadas por mayoría de dos de los tres socios. Cada función indica su titular, frecuencia, entregable, métrica y penalización acordada, cuando corresponda.");
   text("Este ejemplar está pendiente de la firma manuscrita de los tres socios. Las firmas corresponden exclusivamente a esta versión y a las responsabilidades que contiene.");
   text(`Identificador de versión: ${agreement.digest.slice(0,16)}`,{size:8,color:muted,after:4});
   function taskParts(r,number){
@@ -42,6 +42,8 @@ window.buildAlphaPdf=async function(agreement){
       ...(r.description?[[r.description,{}]]:[]),
       [`Frecuencia: ${r.frequency}`,{after:1}],
       [`Entregable: ${r.deliverable}`,{after:1}],
+      [`Métrica: ${r.metric?`${r.metric.name}. Meta: ${r.metric.direction==="lte"?"máximo":"mínimo"} ${r.metric.target} ${r.metric.unit} por frecuencia indicada.`:"Sin definir."}`,{after:1}],
+      [`Penalización por incumplimiento: ${r.penalty||"Sin definir."}`,{after:2}],
       [approval,{size:7.5,color:muted,after:4}],
     ];
   }

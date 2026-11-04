@@ -36,10 +36,10 @@ test("votes can change while open; two against reject",async()=>{
   await call("vote","tono",{motion_id:m.motion_id,value:"reject"});const state=await call("state");
   assert.equal(state.motions[0].status,"rejected");assert.equal(state.responsibilities[0].status,"rejected");assert.equal(state.motions[0].votes.josue,"reject");
 });
-test("only the proposer cancels; history and votes remain",async()=>{
+test("all three admins may cancel proposals; history and votes remain",async()=>{
   const m=await proposed();await call("vote","tono",{motion_id:m.motion_id,value:"approve"});
-  assert.equal((await call("cancel","brandon",{motion_id:m.motion_id})).status,403);
-  assert.equal((await call("cancel","josue",{motion_id:m.motion_id})).ok,true);
+  assert.equal((await call("state","brandon")).me.role,"admin");
+  assert.equal((await call("cancel","brandon",{motion_id:m.motion_id})).ok,true);
   const state=await call("state");assert.equal(state.motions[0].status,"cancelled");assert.equal(state.motions[0].votes.tono,"approve");assert.equal(state.responsibilities[0].status,"cancelled");assert.ok(state.events.some(e=>e.action==="Propuesta cancelada"));
 });
 test("changes and reassignments take effect only after two approvals",async()=>{
@@ -87,4 +87,66 @@ test("shared state and backups contain no keys, hashes or session credentials",a
 });
 test("schema can be reapplied without losing responsibilities",async()=>{
   await active();await db.exec(schema());assert.equal((await call("state")).responsibilities[0].status,"active");
+});
+test("metric and penalty terms require a majority and stay fixed in past agreements",async()=>{
+  const m=await active(),a=await call("agreement");
+  const old=await call("agreement_data","josue",{agreement_id:a.id});
+  assert.equal(old.snapshot.responsibilities[0].penalty,sample().penalty);
+  assert.deepEqual(old.snapshot.responsibilities[0].metric,sample().metric);
+  const changed=sample({penalty:"Nueva condición",metric:{name:"Errores",target:0,unit:"errores",direction:"lte"}});
+  const edit=await call("motion","tono",{responsibility_id:m.id,kind:"edit",reason:"Ajustar la medición",payload:changed});
+  await call("vote","tono",{motion_id:edit.motion_id,value:"approve"});
+  assert.equal((await call("state")).responsibilities[0].penalty,sample().penalty);
+  await call("vote","brandon",{motion_id:edit.motion_id,value:"approve"});
+  assert.deepEqual((await call("state")).responsibilities[0].metric,changed.metric);
+  assert.deepEqual(await call("agreement_data","josue",{agreement_id:a.id}),old);
+});
+test("measurements preserve the target, owner, author and correction history",async()=>{
+  const m=await active();
+  const payload={responsibility_id:m.id,period:"Noviembre 2026",actual:95.5,note:"Reporte entregado",actor:"tono",metric:{target:1}};
+  assert.ok((await call("measure","brandon",payload)).id);
+  assert.ok((await call("measure","brandon",{...payload,actual:100,note:"Corrección documentada"})).id);
+  let entries=(await call("state")).measurements;assert.equal(entries.length,2);
+  assert.ok(entries.some(e=>e.actual===95.5));
+  for(const e of entries){assert.equal(e.owner,"josue");assert.equal(e.actor,"brandon");assert.deepEqual(e.metric,sample().metric);}
+  const edit=await call("motion","josue",{responsibility_id:m.id,kind:"edit",reason:"Cambiar titular y meta",payload:sample({owner:"tono",metric:{...sample().metric,target:90}})});
+  await call("vote","josue",{motion_id:edit.motion_id,value:"approve"});await call("vote","tono",{motion_id:edit.motion_id,value:"approve"});
+  entries=(await call("backup")).measurements;assert.equal(entries.length,2);assert.equal(entries[0].metric.target,100);assert.equal(entries[0].owner,"josue");
+});
+test("incident tracking preserves agreed penalty and records admin resolution",async()=>{
+  const m=await active();
+  const result=await call("incident","brandon",{responsibility_id:m.id,occurred_on:"2026-01-01",detail:"No se entregó el corte",penalty:"Impuesta por cliente",owner:"tono"});
+  assert.ok(result.id);let i=(await call("state")).incidents[0];assert.equal(i.owner,"josue");assert.equal(i.penalty,sample().penalty);assert.equal(i.actor,"brandon");assert.equal(i.status,"open");
+  assert.equal((await call("resolve_incident","tono",{incident_id:i.id,status:"resolved",resolution:""})).status,400);
+  assert.equal((await call("resolve_incident","tono",{incident_id:i.id,status:"resolved",resolution:"Se repuso la entrega"})).ok,true);
+  i=(await call("backup")).incidents[0];assert.equal(i.status,"resolved");assert.equal(i.resolved_by,"tono");assert.equal(i.detail,"No se entregó el corte");
+  assert.equal((await call("resolve_incident","josue",{incident_id:i.id,status:"dismissed",resolution:"Segundo cierre"})).status,409);
+});
+test("tracking validates terms, values, dates and active status",async()=>{
+  for(const override of [{penalty:"x".repeat(1201)},{metric:{}},{metric:{...sample().metric,target:-1}},{metric:{...sample().metric,target:"100"}},{metric:{...sample().metric,direction:"invalid"}},{metric:{...sample().metric,name:" "}}])assert.equal((await proposed(sample(override))).status,400);
+  const p=await proposed();assert.equal((await call("measure","josue",{responsibility_id:p.id,period:"Mes",actual:1})).status,409);
+  await call("cancel","tono",{motion_id:p.motion_id});const m=await active();
+  for(const override of [{actual:-1},{actual:"100"},{actual:1e13},{period:" "},{note:42}])assert.equal((await call("measure","josue",{responsibility_id:m.id,period:"Mes",actual:1,...override})).status,400);
+  for(const override of [{occurred_on:"2099-01-01"},{occurred_on:"2026-02-30"},{detail:" "}])assert.equal((await call("incident","josue",{responsibility_id:m.id,occurred_on:"2026-01-01",detail:"Retraso",...override})).status,400);
+  await assert.rejects(db.transaction(async tx=>{await tx.exec("set local role anon");await tx.query("select * from alpha_private.measurements");}),/permission denied/);
+});
+test("optional terms are compatible with older proposals",async()=>{
+  const payload=sample();delete payload.penalty;delete payload.metric;
+  const m=await proposed(payload);await call("vote","josue",{motion_id:m.motion_id,value:"approve"});await call("vote","brandon",{motion_id:m.motion_id,value:"approve"});
+  const r=(await call("state")).responsibilities[0];assert.equal(r.penalty,"");assert.equal(r.metric,null);
+  assert.equal((await call("measure","tono",{responsibility_id:m.id,period:"Mes",actual:1})).status,409);
+  assert.equal((await call("incident","tono",{responsibility_id:m.id,occurred_on:"2026-01-01",detail:"Sin acuerdo"})).status,409);
+});
+test("admins can set distinct simple keys and revoke the affected partner sessions",async()=>{
+  const original=testKey("tono"),newKey="simple-test-password";
+  try{
+    assert.equal((await call("change_key","brandon",{partner:"tono",key:"abc"})).status,400);
+    assert.equal((await call("change_key","brandon",{partner:"tono",key:testKey("josue")})).status,409);
+    assert.equal((await call("change_key","brandon",{partner:"tono",key:newKey})).ok,true);
+    assert.equal((await rpc(db,"login","",{key:original})).status,401);
+    assert.equal((await call("state","tono")).status,401);
+    const login=await rpc(db,"login","",{key:newKey});assert.equal(login.partner.slug,"tono");assert.equal(login.partner.role,"admin");
+    assert.equal((await call("state","brandon")).me.slug,"brandon");
+    assert.ok(!JSON.stringify(await call("backup","brandon")).includes(newKey));
+  }finally{await db.query("update alpha_private.partners set key_hash=encode(extensions.digest($1,'sha256'),'hex') where slug='tono'",[original]);}
 });
