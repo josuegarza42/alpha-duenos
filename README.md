@@ -16,7 +16,10 @@ Página: https://josuegarza42.github.io/alpha-duenos/
 - Registrar incumplimientos con fecha y evidencia, y documentar su resolución o descarte. Se conserva la penalización vigente al registrarlos. No se generan cobros automáticos.
 - Administrar las claves de los tres desde **Accesos**. Cada clave debe ser distinta y tener al menos seis caracteres; cambiarla invalida el enlace anterior y cierra las otras sesiones de ese socio.
 - Generar versiones inmutables del acuerdo, con votos y un PDF para imprimir y firmar a mano los tres. Debe existir al menos una función aprobada y no quedar votaciones abiertas. Descargar el PDF no lo marca como firmado.
-- Descargar un respaldo JSON sin claves ni sesiones.
+- Eliminar propuestas, funciones retiradas, registros de incumplimiento y acuerdos con una papelera recuperable. Las funciones vigentes se retiran con dos votos; quitar una penalización acordada también se vota. Restaurar no reactiva funciones ni reabre votos. Eliminar un acuerdo no invalida documentos ya firmados.
+- Ver las funciones aprobadas y las propuestas pendientes en tres columnas, con una distinción visible de estado.
+- Filtrar las propuestas por responsable y ver cuántas tiene cada socio.
+- Descargar un respaldo JSON sin claves ni sesiones, incluidos los elementos en papelera.
 
 ## Alojamiento
 

@@ -78,6 +78,10 @@ create table if not exists alpha_private.events (
   id bigserial primary key, actor text not null references alpha_private.partners(slug),
   action text not null, detail text not null, created_at timestamptz not null default now()
 );
+-- Recoverable deletion keeps votes, evidence and immutable agreement snapshots.
+alter table alpha_private.responsibilities add column if not exists deleted_at timestamptz;
+alter table alpha_private.incidents add column if not exists deleted_at timestamptz;
+alter table alpha_private.agreements add column if not exists deleted_at timestamptz;
 
 -- RLS is defense in depth in addition to the inaccessible schema.
 alter table alpha_private.partners enable row level security;
@@ -141,7 +145,7 @@ language sql stable set search_path='' as $$
  'responsibilities',coalesce((select jsonb_agg((alpha_private.responsibility_json(r)-'updated_at')||jsonb_build_object('approval',(
    select jsonb_build_object('motion_id',m.id,'date',m.decided_at,'votes',(select jsonb_object_agg(v.partner,v.value) from alpha_private.votes v where v.motion_id=m.id))
    from alpha_private.motions m where m.responsibility_id=r.id and m.status='approved' and m.kind in ('create','edit') order by m.decided_at desc,m.created_at desc limit 1
- )) order by r.owner,r.title,r.id) from alpha_private.responsibilities r where r.status='active'),'[]'::jsonb));
+ )) order by r.owner,r.title,r.id) from alpha_private.responsibilities r where r.status='active' and r.deleted_at is null),'[]'::jsonb));
 $$;
 
 create or replace function public.alpha_api(p_action text,p_token text default '',p_payload jsonb default '{}') returns jsonb
@@ -173,12 +177,17 @@ begin
  if p_action='state' then
    return jsonb_build_object('revision',rev,'me',(select jsonb_build_object('slug',p.slug,'name',p.name,'role','admin') from alpha_private.partners p where p.slug=actor),
      'partners',(select jsonb_agg(jsonb_build_object('slug',p.slug,'name',p.name,'role','admin') order by case p.slug when 'josue' then 1 when 'brandon' then 2 else 3 end) from alpha_private.partners p),
-     'responsibilities',coalesce((select jsonb_agg(alpha_private.responsibility_json(r0) order by r0.created_at,r0.id) from alpha_private.responsibilities r0),'[]'::jsonb),
-     'motions',coalesce((select jsonb_agg(alpha_private.motion_json(m0) order by m0.created_at desc,m0.id) from alpha_private.motions m0),'[]'::jsonb),
-     'agreements',coalesce((select jsonb_agg(jsonb_build_object('id',a0.id,'version',a0.version,'created_at',a0.created_at,'digest',a0.digest,'count',jsonb_array_length(a0.snapshot->'responsibilities')) order by a0.version desc) from alpha_private.agreements a0),'[]'::jsonb),
+     'responsibilities',coalesce((select jsonb_agg(alpha_private.responsibility_json(r0) order by r0.created_at,r0.id) from alpha_private.responsibilities r0 where r0.deleted_at is null),'[]'::jsonb),
+     'motions',coalesce((select jsonb_agg(alpha_private.motion_json(m0) order by m0.created_at desc,m0.id) from alpha_private.motions m0 join alpha_private.responsibilities r0 on r0.id=m0.responsibility_id where r0.deleted_at is null),'[]'::jsonb),
+     'agreements',coalesce((select jsonb_agg(jsonb_build_object('id',a0.id,'version',a0.version,'created_at',a0.created_at,'digest',a0.digest,'count',jsonb_array_length(a0.snapshot->'responsibilities')) order by a0.version desc) from alpha_private.agreements a0 where a0.deleted_at is null),'[]'::jsonb),
      'events',coalesce((select jsonb_agg(to_jsonb(e) order by e.id desc) from (select e0.id,p.name actor,e0.action,e0.detail,e0.created_at from alpha_private.events e0 join alpha_private.partners p on p.slug=e0.actor order by e0.id desc limit 120) e),'[]'::jsonb),
      'measurements',coalesce((select jsonb_agg(to_jsonb(x) order by x.created_at desc,x.id) from alpha_private.measurements x),'[]'::jsonb),
-     'incidents',coalesce((select jsonb_agg(to_jsonb(x) order by x.created_at desc,x.id) from alpha_private.incidents x),'[]'::jsonb),
+     'incidents',coalesce((select jsonb_agg(to_jsonb(x) order by x.created_at desc,x.id) from alpha_private.incidents x where x.deleted_at is null),'[]'::jsonb),
+     'trash',coalesce((select jsonb_agg(to_jsonb(x) order by x.deleted_at desc,x.id) from (
+       select 'responsibility' type,id,title,status,deleted_at from alpha_private.responsibilities where deleted_at is not null
+       union all select 'incident',id,title,status,deleted_at from alpha_private.incidents where deleted_at is not null
+       union all select 'agreement',id,'Acuerdo v'||version,'snapshot',deleted_at from alpha_private.agreements where deleted_at is not null
+     ) x),'[]'::jsonb),
      'rule',jsonb_build_object('threshold',2,'partners',3,'signatures','handwritten'));
  elsif p_action='create' then
    data=alpha_private.payload(p_payload);
@@ -187,7 +196,7 @@ begin
    perform alpha_private.event(actor,'Responsabilidad propuesta',r.title);
    return jsonb_build_object('id',r.id,'motion_id',new_id);
  elsif p_action='motion' then
-   select * into r from alpha_private.responsibilities where id=(p_payload->>'responsibility_id')::uuid;
+   select * into r from alpha_private.responsibilities where id=(p_payload->>'responsibility_id')::uuid and deleted_at is null;
    if not found then return jsonb_build_object('error','La función no está disponible.','status',404); end if;
    if r.status<>'active' or exists(select 1 from alpha_private.motions where responsibility_id=r.id and status='pending') then return jsonb_build_object('error','La función no está aprobada o ya tiene una votación abierta.','status',409); end if;
    kind=p_payload->>'kind';reason=btrim(coalesce(p_payload->>'reason',''));
@@ -222,10 +231,32 @@ begin
      perform alpha_private.event(actor,case when yes_count>=2 then 'Propuesta aprobada' else 'Propuesta rechazada' end,r.title||' · '||yes_count||' a favor / '||no_count||' en contra');
    end if;
    return jsonb_build_object('ok',true,'status',m.status);
+ elsif p_action in ('trash','restore') then
+   kind=p_payload->>'type';new_id=(p_payload->>'id')::uuid;
+   if coalesce(kind,'') not in ('responsibility','incident','agreement') or new_id is null then return jsonb_build_object('error','Selecciona un elemento válido.','status',400); end if;
+   if kind='responsibility' then
+     select * into r from alpha_private.responsibilities where id=new_id;
+     if not found then return jsonb_build_object('error','La función no está disponible.','status',404); end if;
+     if (p_action='trash' and r.deleted_at is not null) or (p_action='restore' and r.deleted_at is null) then return jsonb_build_object('error','El elemento ya cambió. Actualiza la página.','status',409); end if;
+     if p_action='trash' and r.status='active' then return jsonb_build_object('error','Primero propongan el retiro de la función vigente y reúnan dos votos a favor.','status',409); end if;
+     if p_action='trash' then
+       update alpha_private.motions set status='cancelled',decided_at=now() where responsibility_id=r.id and status='pending';
+       update alpha_private.responsibilities set status=case when status='proposed' then 'cancelled' else status end,deleted_at=now() where id=r.id;
+     else update alpha_private.responsibilities set deleted_at=null where id=r.id; end if;
+     secret=r.title;
+   elsif kind='incident' then
+     update alpha_private.incidents set deleted_at=case when p_action='trash' then now() else null end where id=new_id and ((p_action='trash' and deleted_at is null) or (p_action='restore' and deleted_at is not null)) returning title into secret;
+     if not found then return jsonb_build_object('error','El registro no está disponible o ya cambió.','status',409); end if;
+   else
+     update alpha_private.agreements set deleted_at=case when p_action='trash' then now() else null end where id=new_id and ((p_action='trash' and deleted_at is null) or (p_action='restore' and deleted_at is not null)) returning 'Acuerdo v'||version into secret;
+     if not found then return jsonb_build_object('error','El acuerdo no está disponible o ya cambió.','status',409); end if;
+   end if;
+   perform alpha_private.event(actor,case when p_action='trash' then 'Enviado a papelera' else 'Restaurado de papelera' end,secret);
+   return jsonb_build_object('ok',true);
  elsif p_action in ('measure','incident') then
    select * into r from alpha_private.responsibilities where id=(p_payload->>'responsibility_id')::uuid;
    if not found then return jsonb_build_object('error','La función no está disponible.','status',404); end if;
-   if r.status<>'active' then return jsonb_build_object('error','Solo se registran resultados de funciones vigentes.','status',409); end if;
+   if r.status<>'active' or r.deleted_at is not null then return jsonb_build_object('error','Solo se registran resultados de funciones vigentes.','status',409); end if;
    if p_action='measure' then
      if r.metric is null then return jsonb_build_object('error','Primero acuerden una métrica para esta función.','status',409); end if;
      if jsonb_typeof(p_payload->'actual') is distinct from 'number' or (p_payload->>'actual')::numeric not between 0 and 1000000000000
@@ -248,7 +279,7 @@ begin
  elsif p_action='resolve_incident' then
    v=p_payload->>'status';reason=btrim(coalesce(p_payload->>'resolution',''));
    if coalesce(v,'') not in ('resolved','dismissed') or reason='' or char_length(reason)>1200 then return jsonb_build_object('error','Indica el resultado y cómo se resolvió (hasta 1200 caracteres).','status',400); end if;
-   update alpha_private.incidents set status=v,resolution=reason,resolved_by=api.actor,resolved_at=now() where id=(p_payload->>'incident_id')::uuid and status='open' returning title into secret;
+   update alpha_private.incidents set status=v,resolution=reason,resolved_by=api.actor,resolved_at=now() where id=(p_payload->>'incident_id')::uuid and status='open' and deleted_at is null returning title into secret;
    if not found then return jsonb_build_object('error','El registro no existe o ya se cerró.','status',409); end if;
    perform alpha_private.event(actor,case when v='resolved' then 'Incumplimiento resuelto' else 'Incumplimiento descartado' end,secret||' · '||reason);
    return jsonb_build_object('ok',true);
@@ -269,14 +300,17 @@ begin
    if not found then
      insert into alpha_private.agreements(version,revision,digest,snapshot,created_by) values((select coalesce(max(version),0)+1 from alpha_private.agreements),rev,digest_value,snap,actor) returning * into a;
      perform alpha_private.event(actor,'Acuerdo generado','Versión '||a.version||' · pendiente de firma de los tres socios');
+   elsif a.deleted_at is not null then
+     update alpha_private.agreements set deleted_at=null where id=a.id;
+     perform alpha_private.event(actor,'Restaurado de papelera','Acuerdo v'||a.version);
    end if;
    return jsonb_build_object('id',a.id,'version',a.version);
  elsif p_action='agreement_data' then
-   select * into a from alpha_private.agreements where id=(p_payload->>'agreement_id')::uuid;
+   select * into a from alpha_private.agreements where id=(p_payload->>'agreement_id')::uuid and deleted_at is null;
    if not found then return jsonb_build_object('error','El acuerdo no está disponible.','status',404); end if;
    return jsonb_build_object('id',a.id,'version',a.version,'revision',a.revision,'created_at',a.created_at,'digest',a.digest,'snapshot',a.snapshot);
  elsif p_action='backup' then
-   return jsonb_build_object('exported_at',now(),'measurements',coalesce((select jsonb_agg(to_jsonb(x)) from alpha_private.measurements x),'[]'::jsonb),'incidents',coalesce((select jsonb_agg(to_jsonb(x)) from alpha_private.incidents x),'[]'::jsonb),'responsibilities',coalesce((select jsonb_agg(alpha_private.responsibility_json(r1)) from alpha_private.responsibilities r1),'[]'::jsonb),'motions',coalesce((select jsonb_agg(alpha_private.motion_json(m1)) from alpha_private.motions m1),'[]'::jsonb),'agreements',coalesce((select jsonb_agg(to_jsonb(a1)) from alpha_private.agreements a1),'[]'::jsonb),'events',coalesce((select jsonb_agg(to_jsonb(e1)) from alpha_private.events e1),'[]'::jsonb));
+   return jsonb_build_object('exported_at',now(),'measurements',coalesce((select jsonb_agg(to_jsonb(x)) from alpha_private.measurements x),'[]'::jsonb),'incidents',coalesce((select jsonb_agg(to_jsonb(x)) from alpha_private.incidents x),'[]'::jsonb),'responsibilities',coalesce((select jsonb_agg(alpha_private.responsibility_json(r1)||jsonb_build_object('deleted_at',r1.deleted_at)) from alpha_private.responsibilities r1),'[]'::jsonb),'motions',coalesce((select jsonb_agg(alpha_private.motion_json(m1)) from alpha_private.motions m1),'[]'::jsonb),'agreements',coalesce((select jsonb_agg(to_jsonb(a1)) from alpha_private.agreements a1),'[]'::jsonb),'events',coalesce((select jsonb_agg(to_jsonb(e1)) from alpha_private.events e1),'[]'::jsonb));
  end if;
  return jsonb_build_object('error','Acción no disponible.','status',404);
 exception

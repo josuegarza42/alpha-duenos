@@ -150,3 +150,48 @@ test("admins can set distinct simple keys and revoke the affected partner sessio
     assert.ok(!JSON.stringify(await call("backup","brandon")).includes(newKey));
   }finally{await db.query("update alpha_private.partners set key_hash=encode(extensions.digest($1,'sha256'),'hex') where slug='tono'",[original]);}
 });
+test("deleting a proposal cancels voting; restore keeps votes and does not reopen it",async()=>{
+  const m=await proposed();await call("vote","tono",{motion_id:m.motion_id,value:"approve"});
+  assert.equal((await call("trash","brandon",{type:"responsibility",id:m.id})).ok,true);
+  let state=await call("state");assert.equal(state.responsibilities.length,0);assert.equal(state.motions.length,0);assert.equal(state.trash[0].id,m.id);
+  const backup=await call("backup");assert.ok(backup.responsibilities[0].deleted_at);assert.equal(backup.motions[0].votes.tono,"approve");
+  assert.equal((await call("vote","josue",{motion_id:m.motion_id,value:"approve"})).status,409);
+  assert.equal((await call("motion","josue",{responsibility_id:m.id,kind:"retire",reason:"Oculta"})).status,404);
+  assert.equal((await call("restore","tono",{type:"responsibility",id:m.id})).ok,true);
+  state=await call("state");assert.equal(state.responsibilities[0].status,"cancelled");assert.equal(state.motions[0].status,"cancelled");assert.equal(state.motions[0].votes.tono,"approve");assert.equal(state.trash.length,0);
+});
+test("active functions cannot bypass majority by deletion; retired functions restore as retired",async()=>{
+  const m=await active();assert.equal((await call("trash","brandon",{type:"responsibility",id:m.id})).status,409);
+  const retire=await call("motion","brandon",{responsibility_id:m.id,kind:"retire",reason:"Ya no aplica"});
+  await call("vote","brandon",{motion_id:retire.motion_id,value:"approve"});assert.equal((await call("trash","tono",{type:"responsibility",id:m.id})).status,409);
+  await call("vote","tono",{motion_id:retire.motion_id,value:"approve"});
+  assert.equal((await call("trash","tono",{type:"responsibility",id:m.id})).ok,true);
+  assert.equal((await call("restore","josue",{type:"responsibility",id:m.id})).ok,true);
+  assert.equal((await call("state")).responsibilities[0].status,"retired");
+});
+test("penalty removal requires two votes and preserves earlier agreements and incidents",async()=>{
+  const m=await active(),a=await call("agreement"),original=await call("agreement_data","josue",{agreement_id:a.id});
+  await call("incident","tono",{responsibility_id:m.id,occurred_on:"2026-01-01",detail:"Pendiente de revisión"});
+  const edit=await call("motion","tono",{responsibility_id:m.id,kind:"edit",payload:sample({penalty:""}),reason:"Quitar penalización"});
+  await call("vote","tono",{motion_id:edit.motion_id,value:"approve"});assert.equal((await call("state")).responsibilities[0].penalty,sample().penalty);
+  await call("vote","brandon",{motion_id:edit.motion_id,value:"approve"});assert.equal((await call("state")).responsibilities[0].penalty,"");
+  assert.equal((await call("state")).incidents[0].penalty,sample().penalty);assert.deepEqual(await call("agreement_data","josue",{agreement_id:a.id}),original);
+});
+test("incident deletion preserves evidence and resolution; hidden incidents cannot be resolved",async()=>{
+  const m=await active(),i=await call("incident","tono",{responsibility_id:m.id,occurred_on:"2026-01-01",detail:"Evidencia original"});
+  assert.equal((await call("trash","brandon",{type:"incident",id:i.id})).ok,true);assert.equal((await call("state")).incidents.length,0);
+  assert.equal((await call("resolve_incident","josue",{incident_id:i.id,status:"resolved",resolution:"Oculto"})).status,409);
+  await call("restore","josue",{type:"incident",id:i.id});await call("resolve_incident","josue",{incident_id:i.id,status:"resolved",resolution:"Atendido"});
+  const original=(await call("state")).incidents[0];await call("trash","tono",{type:"incident",id:i.id});await call("restore","brandon",{type:"incident",id:i.id});
+  assert.deepEqual((await call("state")).incidents[0],original);
+});
+test("agreement deletion and regeneration restore the identical version and snapshot",async()=>{
+  await active();const a=await call("agreement"),original=await call("agreement_data","josue",{agreement_id:a.id});
+  await call("trash","tono",{type:"agreement",id:a.id});assert.equal((await call("state")).agreements.length,0);assert.equal((await call("agreement_data","josue",{agreement_id:a.id})).status,404);
+  assert.equal((await call("backup")).agreements[0].snapshot.responsibilities.length,1);
+  assert.deepEqual(await call("agreement","brandon"),a);assert.deepEqual(await call("agreement_data","josue",{agreement_id:a.id}),original);
+  await call("trash","josue",{type:"agreement",id:a.id});await call("restore","tono",{type:"agreement",id:a.id});
+  assert.deepEqual(await call("agreement_data","josue",{agreement_id:a.id}),original);
+  assert.equal((await call("trash","josue",{type:"unknown",id:a.id})).status,400);
+  assert.equal((await call("restore","josue",{type:"agreement",id:a.id})).status,409);
+});

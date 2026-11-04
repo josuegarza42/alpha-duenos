@@ -17,3 +17,5 @@
 .stat strong{color:#3f2fe6}
 @media(max-width:760px){.brand{gap:9px}.topbar .brand-mark{width:40px;height:40px}.brand-name{font-size:15px}.login-access{border-left:0;border-top:1px solid #e5e5ef}.login-story::before{width:330px;height:330px;right:-160px;bottom:0}}
 .login-story .brand p{margin:0}.login-story .brand .brand-name{font-size:16px;color:#14141c}.login-story .brand .brand-sub{margin-top:3px;font-size:11px;color:#646477}.login-story .brand-mark{width:58px;height:58px}.filters select{width:auto}@media(max-width:760px){.filters select{width:100%}}
+
+.proposed-task{border-top:3px solid #d6a74a}.proposal-details{margin-top:15px}.proposal-details summary{cursor:pointer;font-size:11px;font-weight:650;color:var(--brand);line-height:1.7}.proposal-details .description{margin-top:12px}.archived-row{flex-wrap:wrap;align-items:center}.agreement .task-actions{margin-top:0;padding-top:0;border-top:0}.motion{scroll-margin-top:20px}
