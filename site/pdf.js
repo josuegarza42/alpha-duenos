@@ -14,7 +14,7 @@ window.buildAlphaPdf=async function(agreement){
   doc.addFileToVFS("VeraBd.ttf",fonts[1]);doc.addFont("VeraBd.ttf","Vera","bold");
   doc.setProperties({title:`Alpha Dueños - Acuerdo v${agreement.version}`,author:"Alpha Dueños",subject:"Acuerdo de responsabilidades para firma manuscrita"});
   const data=agreement.snapshot,names=Object.fromEntries(data.partners.map(p=>[p.slug,p.name]));
-  const ink=[30,46,41],muted=[91,106,96],line=[204,214,208];let y=29;
+  const ink=[20,20,28],muted=[100,100,119],line=[222,222,235],accent=[63,47,230];let y=29;
   function ensure(mm){if(y+mm>270){doc.addPage();y=29;}}
   function measure(value,{size=9,bold=false,after=2,width=170,lineHeight}={}){
     doc.setFont("Vera",bold?"bold":"normal");doc.setFontSize(size);
@@ -26,7 +26,7 @@ window.buildAlphaPdf=async function(agreement){
     for(const part of lines){ensure(lead);doc.text(part,20,y);y+=lead;}y+=after;
   }
   function rule(){doc.setDrawColor(...line);doc.setLineWidth(.3);doc.line(20,y,190,y);y+=7;}
-  text("ALPHA DUEÑOS",{size:8,color:muted,after:4});
+  text("ALPHA DUEÑOS",{size:8,color:accent,bold:true,after:4});
   text("Acuerdo de responsabilidades",{size:22,bold:true,after:4,lineHeight:10});
   const stamp=new Intl.DateTimeFormat("es-MX",{dateStyle:"long",timeStyle:"short",timeZone:"America/Mexico_City"}).format(new Date(agreement.created_at));
   text(`Versión ${agreement.version} · ${stamp}, Ciudad de México`,{size:8,color:muted,after:4});rule();
@@ -72,10 +72,21 @@ window.buildAlphaPdf=async function(agreement){
     text("Fecha: ____________________    Lugar: ________________________________",{size:8,color:muted,after:8});
   }
   text("Conservar el ejemplar con las tres firmas junto a esta versión del acuerdo.",{size:8,color:muted});
+  function brandLogo(x,y,size){
+    const point=(a,b)=>[x+a*size/100,y+b*size/100];
+    function polygon(points,color){doc.setFillColor(...color);doc.path(points.map(([a,b],i)=>({op:i?"l":"m",c:point(a,b)})).concat({op:"h",c:[]})).fill();}
+    polygon([[50,12],[88,84],[74,84],[50,38],[26,84],[12,84]],accent);
+    polygon([[50,12],[53,18],[50,24],[47,18]],[255,255,255]);
+    doc.setFillColor(...ink);
+    for(const [a,b,w,h] of [[38,60,24,4],[33,55,4,14],[63,55,4,14],[29,58,3,8],[68,58,3,8]])doc.roundedRect(x+a*size/100,y+b*size/100,w*size/100,h*size/100,.08,.08,"F");
+  }
   const pages=doc.getNumberOfPages();
   for(let n=1;n<=pages;n++){
     doc.setPage(n);doc.setFont("Vera","normal");doc.setFontSize(7);doc.setTextColor(...muted);
-    doc.text("ALPHA DUEÑOS / ACUERDO DE RESPONSABILIDADES",20,16);
+    brandLogo(19,8,11);
+    doc.text("ALPHA DUEÑOS / ACUERDO DE RESPONSABILIDADES",33,16);
+    doc.setTextColor(...accent);doc.text("ALPHA GYM",190,16,{align:"right"});
+    doc.setTextColor(...muted);
     doc.setDrawColor(...line);doc.setLineWidth(.2);doc.line(20,279,190,279);
     doc.text(`Versión ${agreement.version} · ${agreement.digest.slice(0,16)} · Pendiente de firma`,20,285);
     doc.text(`Página ${n} de ${pages}`,190,285,{align:"right"});

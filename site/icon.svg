@@ -1,1 +1,15 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="18" fill="#163f34"/><path d="M16 46 28 17h8l12 29h-8l-2-6H26l-2 6zm12-12h8l-4-12z" fill="#f8f7f2"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none">
+  <rect width="100" height="100" rx="22" fill="#ffffff"/>
+  <!-- Alpha Gym mark, adapted from alpha-gym/static/logo.svg for light backgrounds. -->
+  <path d="M50 12 L88 84 L74 84 L50 38 L26 84 L12 84 Z" fill="#3F2FE6"/>
+  <!-- Preserve the split in the original mark. -->
+  <path d="M50 12 L53 18 L50 24 L47 18 Z" fill="#ffffff"/>
+  <!-- dumbbell -->
+  <g fill="#14141c">
+    <rect x="38" y="60" width="24" height="4" rx="1"/>
+    <rect x="33" y="55" width="4" height="14" rx="1"/>
+    <rect x="63" y="55" width="4" height="14" rx="1"/>
+    <rect x="29" y="58" width="3" height="8" rx="1"/>
+    <rect x="68" y="58" width="3" height="8" rx="1"/>
+  </g>
+</svg>
