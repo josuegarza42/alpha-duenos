@@ -9,6 +9,7 @@ Página: https://josuegarza42.github.io/alpha-duenos/
 - Acceso con una clave privada por socio, verificada en la base de datos.
 - Proponer mejoras de equipo, instalaciones, servicios y experiencia de los clientes en **Nuevas propuestas**, con descripción, beneficio y costo opcional, sin asignar roles.
 - Consultar **En discusión**, **Aprobadas** y **Negadas** con el contenido completo, los votos y los comentarios conservados. Las decisiones anteriores mantienen su resultado.
+- Apelar decisiones aprobadas o negadas con un motivo. La apelación abre una nueva discusión con votos independientes; dos votos coincidentes fijan el nuevo resultado. La decisión vigente se mantiene mientras se revisa, y todas las rondas anteriores siguen disponibles en el historial. Se evita abrir apelaciones duplicadas o de versiones superadas.
 - Proponer funciones con titular, área, frecuencia, alcance y entregable; distinguir obligaciones como socio, trabajo remunerado y apoyo puntual.
 - Votar nuevas funciones, cambios de responsable o alcance y retiros. Un socio tiene un voto; tres votos a favor aprueban, dos a favor y uno en contra abren una discusión, y dos en contra niegan la propuesta. Dos votos a favor sin el tercer voto mantienen la propuesta abierta. Proponer no cuenta como votar.
 - Cambiar el voto mientras la decisión siga abierta. La unanimidad a favor o dos votos en contra cierran la votación inicial. En discusión se conservan los votos iniciales y los comentarios; una segunda votación con motivo requiere dos socios para aprobar o negar.
@@ -53,7 +54,7 @@ node --check site/app.js
 node --check site/pdf.js
 ```
 
-Las pruebas ejecutan el SQL de producción sin cambios en Postgres mediante PGlite, con la extensión real `pgcrypto` y el rol `anon`. Cubren identidad, permisos, unanimidad, discusión 2–1, comentarios, mayoría final, propuestas de mejoras, voto único, cambios y retiros, cancelación, versiones inmutables y ausencia de credenciales en las exportaciones.
+Las pruebas ejecutan el SQL de producción sin cambios en Postgres mediante PGlite, con la extensión real `pgcrypto` y el rol `anon`. Cubren identidad, permisos, unanimidad, discusión 2–1, comentarios, mayoría final, apelaciones de mejoras, funciones, cambios y retiros, restauración de versiones previas, propuestas de mejoras, voto único, cambios y retiros, cancelación, versiones inmutables y ausencia de credenciales en las exportaciones.
 
 Si se cambiaron claves desde la web, actualizar primero el archivo local privado `.private/access.json` y regenerar los enlaces con `python3 tools/provision.py`. El administrador con los accesos locales vigentes puede ejecutar `npm run verify:live` para comprobar los tres accesos contra Supabase, el cierre de sesión y que el esquema privado no esté expuesto. Esta verificación no crea propuestas ni votos.
 

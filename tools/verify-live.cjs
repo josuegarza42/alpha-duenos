@@ -23,7 +23,7 @@ async function rpc(action,token="",payload={}){
   for(const p of partners){
     const auth=await rpc("login","",{key:p.key});assert.equal(auth.partner?.slug,p.slug,`Acceso de ${p.name}`);
     try{
-      const state=await rpc("state",auth.token);assert.equal(state.me.slug,p.slug);assert.equal(state.me.role,"admin");assert.ok(Array.isArray(state.measurements));assert.ok(Array.isArray(state.incidents));assert.ok(Array.isArray(state.trash));assert.equal(state.partners.length,3);assert.equal(state.rule.threshold,3);assert.equal(state.rule.discussion_threshold,2);for(const motion of state.motions){assert.ok(Array.isArray(motion.comments));assert.equal(typeof motion.resolution_votes,"object");}
+      const state=await rpc("state",auth.token);assert.equal(state.me.slug,p.slug);assert.equal(state.me.role,"admin");assert.ok(Array.isArray(state.measurements));assert.ok(Array.isArray(state.incidents));assert.ok(Array.isArray(state.trash));assert.equal(state.partners.length,3);assert.equal(state.rule.threshold,3);assert.equal(state.rule.discussion_threshold,2);for(const motion of state.motions){assert.ok(Array.isArray(motion.comments));assert.equal(typeof motion.can_appeal,"boolean");assert.ok("appeal_of" in motion);assert.ok("superseded_by" in motion);assert.equal(typeof motion.resolution_votes,"object");}
       const backup=JSON.stringify(await rpc("backup",auth.token));assert.ok(!backup.includes("key_hash"));assert.ok(!backup.includes("token_hash"));assert.ok(!backup.includes(auth.token));for(const partner of partners)assert.ok(!backup.includes(partner.key));
       results.push({partner:p.name,responsibilities:state.responsibilities.length,motions:state.motions.length,agreements:state.agreements.length});
     }finally{await rpc("logout",auth.token);}

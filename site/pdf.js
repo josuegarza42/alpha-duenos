@@ -35,7 +35,7 @@ window.buildAlphaPdf=async function(agreement){
   text(`Identificador de versión: ${agreement.digest.slice(0,16)}`,{size:8,color:muted,after:4});
   function taskParts(r,number){
     const votes=r.approval?.votes||{};const yes=Object.entries(votes).filter(([,v])=>v==="approve").map(([s])=>names[s]).join(", ");const no=Object.entries(votes).filter(([,v])=>v==="reject").map(([s])=>names[s]).join(", ");const pending=data.partners.filter(p=>!votes[p.slug]).map(p=>p.name).join(", ");
-    let approval=`${Object.keys(r.approval?.discussion?.resolution_votes||{}).length?"Votación final tras discusión. ":""}A favor: ${yes}.`;if(no)approval+=` En contra: ${no}.`;if(pending)approval+=` Sin voto registrado al cierre: ${pending}.`;
+    let approval=`${r.approval?.discussion?.appeal_of?`Apelación resuelta: propuesta ${r.approval.discussion.status==="approved"?"aprobada":"negada; se conserva la función anterior"}. `:""}${Object.keys(r.approval?.discussion?.resolution_votes||{}).length?"Votación final tras discusión. ":""}A favor: ${yes}.`;if(no)approval+=` En contra: ${no}.`;if(pending)approval+=` Sin voto registrado al cierre: ${pending}.`;
     return [
       [`${String(number).padStart(2,"0")}. ${r.title}`,{size:10,bold:true,after:2}],
       [`${r.category} · ${r.scope}`,{size:7.5,color:muted,after:2}],

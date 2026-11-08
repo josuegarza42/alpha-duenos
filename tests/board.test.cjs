@@ -272,3 +272,78 @@ test("validates gym improvements, discussion actions, and private discussion tab
   for(const table of ["discussion_comments","resolution_votes"])await assert.rejects(db.transaction(async tx=>{await tx.exec("set local role anon");await tx.query(`select * from alpha_private.${table}`);}),/permission denied/);
   await db.exec(schema());assert.equal((await call("state")).motions[0].status,"discussion");
 });
+
+async function finish(m,value="approve",actors=["josue","brandon","tono"]){for(const actor of actors)assert.equal((await call("vote",actor,{motion_id:m.motion_id,value})).ok,true);}
+async function appeal(m,reason="Reconsiderar la decisión"){return call("appeal","tono",{motion_id:m.motion_id,reason});}
+async function resolve(m,value){for(const actor of ["josue","brandon"])assert.equal((await call("resolve_discussion",actor,{motion_id:m.motion_id,value,reason:"Resultado acordado"})).ok,true);}
+async function rawMotion(id){return (await db.query("select to_jsonb(m) data from alpha_private.motions m where id=$1",[id])).rows[0].data;}
+test("appeals keep the original approved function and votes until a new majority decides",async()=>{
+  const m=await active(),original=await rawMotion(m.motion_id),originalVotes=(await call("state")).motions[0].votes;
+  const a=await appeal(m);assert.ok(a.motion_id);let state=await call("state"),round=state.motions.find(x=>x.id===a.motion_id);
+  assert.equal(round.status,"discussion");assert.equal(round.appeal_of,m.motion_id);assert.deepEqual(round.votes,{});assert.deepEqual(round.resolution_votes,{});assert.equal(round.proposer,"tono");assert.equal(state.responsibilities[0].status,"active");
+  assert.equal((await call("agreement")).status,409);assert.equal(state.motions.find(x=>x.id===m.motion_id).superseded_by,null);
+  for(let n=0;n<2;n++)await call("resolve_discussion","josue",{motion_id:a.motion_id,value:"reject",reason:"Hace falta reconsiderarla"});
+  assert.equal((await call("state")).responsibilities[0].status,"active");
+  await call("resolve_discussion","brandon",{motion_id:a.motion_id,value:"reject",reason:"No debe seguir vigente"});
+  state=await call("state");assert.equal(state.responsibilities[0].status,"rejected");assert.equal(state.motions.find(x=>x.id===a.motion_id).status,"rejected");assert.equal(state.motions.find(x=>x.id===m.motion_id).superseded_by,a.motion_id);assert.deepEqual(state.motions.find(x=>x.id===m.motion_id).votes,originalVotes);assert.deepEqual(await rawMotion(m.motion_id),original);
+  const next=await appeal(a);assert.ok(next.motion_id);await resolve(next,"approve");assert.equal((await call("state")).responsibilities[0].status,"active");
+  const backup=await call("backup");assert.equal(backup.motions.length,3);assert.equal(backup.motions.find(x=>x.id===a.motion_id).appeal_of,m.motion_id);
+});
+test("denied functions can be appealed and activated without replacing the original denial",async()=>{
+  const m=await proposed();await finish(m,"reject",["josue","brandon"]);const original=await rawMotion(m.motion_id);
+  const a=await appeal(m);assert.ok(a.motion_id);assert.equal((await call("state")).responsibilities[0].status,"rejected");await resolve(a,"approve");
+  assert.equal((await call("state")).responsibilities[0].status,"active");assert.deepEqual(await rawMotion(m.motion_id),original);
+});
+test("approved and denied gym improvements can be appealed without creating roles",async()=>{
+  for(const value of ["approve","reject"]){
+    const m=await call("create_improvement","josue",improvement());await finish(m,value,value==="approve"?["josue","brandon","tono"]:["josue","brandon"]);
+    const original=await rawMotion(m.motion_id),a=await appeal(m);assert.ok(a.motion_id);await resolve(a,value==="approve"?"reject":"approve");
+    const state=await call("state");assert.equal(state.responsibilities.length,0);assert.equal(state.motions.find(x=>x.id===a.motion_id).status,value==="approve"?"rejected":"approved");assert.deepEqual(await rawMotion(m.motion_id),original);
+  }
+});
+test("appealing an approved edit restores its prior owner, terms and agreement history if denied",async()=>{
+  const m=await active(),oldAgreement=await call("agreement"),oldSnapshot=await call("agreement_data","josue",{agreement_id:oldAgreement.id});
+  const changed=sample({title:"Corte semanal",owner:"brandon",penalty:"Nueva penalización",metric:{name:"Errores",target:0,unit:"errores",direction:"lte"}});
+  const edit=await call("motion","josue",{responsibility_id:m.id,kind:"edit",payload:changed,reason:"Reorganizar"});await finish(edit);
+  const a=await appeal(edit);assert.ok(a.motion_id);assert.equal((await call("state")).responsibilities[0].owner,"brandon");await resolve(a,"reject");
+  const state=await call("state"),r=state.responsibilities[0];assert.equal(r.status,"active");assert.equal(r.owner,"josue");assert.equal(r.title,sample().title);assert.equal(r.penalty,sample().penalty);assert.deepEqual(r.metric,sample().metric);
+  const current=await call("agreement"),snapshot=await call("agreement_data","josue",{agreement_id:current.id});assert.equal(snapshot.snapshot.responsibilities[0].approval.motion_id,a.motion_id);assert.equal(snapshot.snapshot.responsibilities[0].approval.discussion.appeal_of,edit.motion_id);
+  assert.deepEqual(await call("agreement_data","josue",{agreement_id:oldAgreement.id}),oldSnapshot);
+});
+test("appealing a denied edit can approve the proposed version",async()=>{
+  const m=await active(),edit=await call("motion","tono",{responsibility_id:m.id,kind:"edit",payload:sample({owner:"tono"}),reason:"Nuevo reparto"});await finish(edit,"reject",["josue","brandon"]);
+  const a=await appeal(edit);assert.ok(a.motion_id);await resolve(a,"approve");assert.equal((await call("state")).responsibilities[0].owner,"tono");
+});
+test("appeals reconsider both approved and denied retirements",async()=>{
+  for(const value of ["approve","reject"]){
+    const m=await active(),retire=await call("motion","josue",{responsibility_id:m.id,kind:"retire",reason:"Revisar retiro"});await finish(retire,value,value==="approve"?["josue","brandon","tono"]:["josue","brandon"]);
+    const a=await appeal(retire);assert.ok(a.motion_id);const before=(await call("state")).responsibilities.find(x=>x.id===m.id).status;assert.equal(before,value==="approve"?"retired":"active");
+    await resolve(a,value==="approve"?"reject":"approve");assert.equal((await call("state")).responsibilities.find(x=>x.id===m.id).status,value==="approve"?"active":"retired");
+  }
+});
+test("legacy approved edits recover their previous approved version for appeal",async()=>{
+  const m=await active(),edit=await call("motion","josue",{responsibility_id:m.id,kind:"edit",payload:sample({owner:"brandon"}),reason:"Reparto anterior"});await finish(edit);
+  await db.query("update alpha_private.motions set before_state=null where id=$1",[edit.motion_id]);
+  const a=await appeal(edit);assert.ok(a.motion_id);await resolve(a,"reject");assert.equal((await call("state")).responsibilities[0].owner,"josue");
+});
+test("duplicate and stale appeals cannot overwrite a newer decision or an open vote",async()=>{
+  const m=await active(),edit=await call("motion","josue",{responsibility_id:m.id,kind:"edit",payload:sample({owner:"brandon"}),reason:"Nuevo reparto"});
+  assert.equal((await appeal(m)).status,409);await finish(edit);assert.equal((await appeal(m)).status,409);
+  assert.equal((await call("state")).motions.find(x=>x.id===m.motion_id).can_appeal,false);
+  const results=await Promise.all([appeal(edit),appeal(edit)]);assert.equal(results.filter(x=>x.motion_id).length,1);assert.equal(results.filter(x=>x.status===409).length,1);
+  await resolve(results.find(x=>x.motion_id),"approve");assert.equal((await appeal(edit)).status,409);
+});
+test("appeal validation preserves sessions, author identity and closed decision data",async()=>{
+  const m=await proposed();assert.equal((await appeal(m)).status,409);await finish(m);
+  for(const reason of [" ",42,"x".repeat(1001),null])assert.equal((await appeal(m,reason)).status,400);
+  assert.equal((await rpc(db,"appeal","",{motion_id:m.motion_id,reason:"Sin sesión"})).status,401);
+  assert.equal((await appeal({motion_id:"not-a-uuid"})).status,400);assert.equal((await appeal({motion_id:"00000000-0000-0000-0000-000000000000"})).status,404);
+  const a=await call("appeal","brandon",{motion_id:m.motion_id,reason:"Revisar alcance",actor:"josue",payload:sample({owner:"tono"}),before_state:sample({owner:"tono"})});assert.ok(a.motion_id);
+  const round=(await call("state")).motions.find(x=>x.id===a.motion_id);assert.equal(round.proposer,"brandon");assert.equal(round.payload.owner,"josue");
+  await db.exec(schema());assert.equal((await call("state")).motions.find(x=>x.id===a.motion_id).appeal_of,m.motion_id);
+  assert.equal((await call("trash","josue",{type:"responsibility",id:m.id})).status,409);
+});
+test("hidden decisions must be restored before appeal",async()=>{
+  const m=await proposed();await finish(m,"reject",["josue","brandon"]);await call("trash","josue",{type:"responsibility",id:m.id});assert.equal((await appeal(m)).status,409);
+  await call("restore","josue",{type:"responsibility",id:m.id});assert.ok((await appeal(m)).motion_id);
+});

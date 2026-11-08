@@ -79,6 +79,10 @@ alter table alpha_private.motions drop constraint if exists motions_subject_chec
 alter table alpha_private.motions add constraint motions_subject_check check((kind='improvement')=(responsibility_id is null));
 drop index if exists alpha_private.one_open_motion;
 create unique index one_open_motion on alpha_private.motions(responsibility_id) where status in ('pending','discussion');
+-- An appeal is a new round; the original decision and every vote stay intact.
+alter table alpha_private.motions add column if not exists appeal_of uuid references alpha_private.motions(id) check(appeal_of<>id);
+alter table alpha_private.motions add column if not exists before_state jsonb;
+create unique index if not exists one_appeal_per_decision on alpha_private.motions(appeal_of) where appeal_of is not null;
 create table if not exists alpha_private.discussion_comments (
   id uuid primary key default gen_random_uuid(),
   motion_id uuid not null references alpha_private.motions(id),
@@ -160,12 +164,27 @@ create or replace function alpha_private.responsibility_json(r alpha_private.res
 language sql stable set search_path='' as $$
  select jsonb_build_object('id',r.id,'title',r.title,'description',r.description,'owner',r.owner,'category',r.category,'frequency',r.frequency,'deliverable',r.deliverable,'scope',r.scope,'penalty',r.penalty,'metric',r.metric,'status',r.status,'updated_at',r.updated_at);
 $$;
+create or replace function alpha_private.appeal_block_reason(m alpha_private.motions) returns text
+language plpgsql stable set search_path='' as $$
+begin
+ if m.status not in ('approved','rejected') then return 'Solo pueden apelarse decisiones aprobadas o negadas.'; end if;
+ if exists(select 1 from alpha_private.motions x where x.appeal_of=m.id) then return 'Esta decisión ya tiene una apelación. Revisa su resultado más reciente.'; end if;
+ if m.responsibility_id is not null then
+   if not exists(select 1 from alpha_private.responsibilities r where r.id=m.responsibility_id and r.deleted_at is null) then return 'La función está en papelera. Restáurala antes de apelar.'; end if;
+   if exists(select 1 from alpha_private.motions x where x.responsibility_id=m.responsibility_id and x.status in ('pending','discussion')) then return 'Esta función ya tiene una votación o discusión abierta.'; end if;
+   if exists(select 1 from alpha_private.motions x where x.responsibility_id=m.responsibility_id and x.status='approved' and x.decided_at>m.decided_at) then return 'Existe una decisión aprobada más reciente para esta función. Apela la decisión vigente.'; end if;
+ end if;
+ return null;
+end;$$;
 create or replace function alpha_private.motion_json(m alpha_private.motions) returns jsonb
 language sql stable set search_path='' as $$
  select jsonb_build_object('id',m.id,'responsibility_id',m.responsibility_id,'title',coalesce(m.payload->>'title',(select r.title from alpha_private.responsibilities r where r.id=m.responsibility_id)),'proposer',m.proposer,'kind',m.kind,'payload',m.payload,'reason',m.reason,'status',m.status,'created_at',m.created_at,'decided_at',m.decided_at,
  'votes',coalesce((select jsonb_object_agg(v.partner,v.value) from alpha_private.votes v where v.motion_id=m.id),'{}'::jsonb),
  'resolution_votes',coalesce((select jsonb_object_agg(v.partner,v.value) from alpha_private.resolution_votes v where v.motion_id=m.id),'{}'::jsonb),
- 'comments',coalesce((select jsonb_agg(to_jsonb(c) order by c.created_at,c.id) from alpha_private.discussion_comments c where c.motion_id=m.id),'[]'::jsonb));
+ 'comments',coalesce((select jsonb_agg(to_jsonb(c) order by c.created_at,c.id) from alpha_private.discussion_comments c where c.motion_id=m.id),'[]'::jsonb),
+ 'appeal_of',m.appeal_of,'can_appeal',alpha_private.appeal_block_reason(m) is null,
+ 'appealed_by',(select x.id from alpha_private.motions x where x.appeal_of=m.id),
+ 'superseded_by',(select x.id from alpha_private.motions x where x.appeal_of=m.id and x.status in ('approved','rejected')));
 $$;
 
 create or replace function alpha_private.snapshot() returns jsonb
@@ -174,7 +193,7 @@ language sql stable set search_path='' as $$
  'partners',(select jsonb_agg(jsonb_build_object('slug',p.slug,'name',p.name,'role','admin') order by case p.slug when 'josue' then 1 when 'brandon' then 2 else 3 end) from alpha_private.partners p),
  'responsibilities',coalesce((select jsonb_agg((alpha_private.responsibility_json(r)-'updated_at')||jsonb_build_object('approval',(
    select jsonb_build_object('motion_id',m.id,'date',m.decided_at,'votes',case when exists(select 1 from alpha_private.resolution_votes v where v.motion_id=m.id) then (select jsonb_object_agg(v.partner,v.value) from alpha_private.resolution_votes v where v.motion_id=m.id) else (select jsonb_object_agg(v.partner,v.value) from alpha_private.votes v where v.motion_id=m.id) end,'discussion',alpha_private.motion_json(m))
-   from alpha_private.motions m where m.responsibility_id=r.id and m.status='approved' and m.kind in ('create','edit') order by m.decided_at desc,m.created_at desc limit 1
+   from alpha_private.motions m where m.responsibility_id=r.id and ((m.status='approved' and m.kind in ('create','edit')) or (m.appeal_of is not null and m.status='rejected' and m.kind in ('edit','retire'))) order by m.decided_at desc,m.created_at desc limit 1
  )) order by r.owner,r.title,r.id) from alpha_private.responsibilities r where r.status='active' and r.deleted_at is null),'[]'::jsonb));
 $$;
 
@@ -243,9 +262,29 @@ begin
    if kind is null or kind not in ('edit','retire') or reason='' or char_length(reason)>1000 then return jsonb_build_object('error','Selecciona cambio o retiro y explica el motivo (máximo 1000 caracteres).','status',400); end if;
    data=case when kind='edit' then alpha_private.payload(p_payload->'payload') else '{}'::jsonb end;
    if kind='edit' and data=alpha_private.responsibility_json(r)-array['id','status','updated_at'] then return jsonb_build_object('error','Incluye al menos un cambio.','status',400); end if;
-   insert into alpha_private.motions(responsibility_id,proposer,kind,payload,reason) values(r.id,actor,kind,data,reason) returning id into new_id;
+   insert into alpha_private.motions(responsibility_id,proposer,kind,payload,reason,before_state) values(r.id,actor,kind,data,reason,alpha_private.responsibility_json(r)) returning id into new_id;
    perform alpha_private.event(actor,case when kind='edit' then 'Cambio propuesto' else 'Retiro propuesto' end,r.title);
    return jsonb_build_object('motion_id',new_id);
+ elsif p_action='appeal' then
+   select * into m from alpha_private.motions where id=(p_payload->>'motion_id')::uuid;
+   if not found then return jsonb_build_object('error','La decisión no está disponible.','status',404); end if;
+   secret=alpha_private.appeal_block_reason(m);
+   if secret is not null then return jsonb_build_object('error',secret,'status',409); end if;
+   reason=btrim(coalesce(p_payload->>'reason',''));
+   if jsonb_typeof(p_payload->'reason') is distinct from 'string' or char_length(reason) not between 1 and 1000 then return jsonb_build_object('error','Explica por qué solicitas apelar (hasta 1000 caracteres).','status',400); end if;
+   data=m.before_state;
+   if m.responsibility_id is not null then
+     select * into r from alpha_private.responsibilities where id=m.responsibility_id;
+     -- Older edits predate before_state. Recover their previous approved version.
+     if data is null and m.kind='edit' then
+       select x.payload||jsonb_build_object('status','active') into data from alpha_private.motions x where x.responsibility_id=m.responsibility_id and x.status='approved' and x.kind in ('create','edit') and x.decided_at<m.decided_at order by x.decided_at desc,x.created_at desc limit 1;
+       if data is null then return jsonb_build_object('error','No se encontró la versión anterior para reconsiderar este cambio.','status',409); end if;
+     elsif data is null and m.kind='retire' then data=alpha_private.responsibility_json(r)||jsonb_build_object('status','active'); end if;
+   end if;
+   insert into alpha_private.motions(responsibility_id,proposer,kind,payload,reason,status,appeal_of,before_state)
+     values(m.responsibility_id,actor,m.kind,m.payload,reason,'discussion',m.id,data) returning id into new_id;
+   perform alpha_private.event(actor,'Apelación abierta',coalesce(m.payload->>'title',r.title)||' · '||reason);
+   return jsonb_build_object('motion_id',new_id,'status','discussion');
  elsif p_action in ('vote','cancel','comment','resolve_discussion') then
    select * into m from alpha_private.motions where id=(p_payload->>'motion_id')::uuid;
    if not found then return jsonb_build_object('error','La propuesta no está disponible.','status',404); end if;
@@ -296,8 +335,12 @@ begin
    update alpha_private.motions set status=m.status,decided_at=now() where id=m.id;
    if m.status='approved' and m.kind='retire' then update alpha_private.responsibilities set status='retired',updated_at=now() where id=r.id;
    elsif m.status='approved' and m.kind in ('create','edit') then update alpha_private.responsibilities set title=m.payload->>'title',description=m.payload->>'description',owner=m.payload->>'owner',category=m.payload->>'category',frequency=m.payload->>'frequency',deliverable=m.payload->>'deliverable',scope=m.payload->>'scope',penalty=coalesce(m.payload->>'penalty',''),metric=nullif(m.payload->'metric','null'::jsonb),status='active',updated_at=now() where id=r.id;
-   elsif m.status='rejected' and m.kind='create' then update alpha_private.responsibilities set status='rejected',updated_at=now() where id=r.id; end if;
-   perform alpha_private.event(actor,case when m.status='approved' then 'Propuesta aprobada' else 'Propuesta negada' end,secret||' · '||yes_count||' a favor / '||no_count||' en contra');
+   elsif m.status='rejected' and m.kind='create' then update alpha_private.responsibilities set status='rejected',updated_at=now() where id=r.id;
+   elsif m.status='rejected' and m.appeal_of is not null and m.kind in ('edit','retire') then
+     data=m.before_state;
+     update alpha_private.responsibilities set title=data->>'title',description=data->>'description',owner=data->>'owner',category=data->>'category',frequency=data->>'frequency',deliverable=data->>'deliverable',scope=data->>'scope',penalty=coalesce(data->>'penalty',''),metric=nullif(data->'metric','null'::jsonb),status='active',updated_at=now() where id=r.id;
+   end if;
+   perform alpha_private.event(actor,case when m.appeal_of is not null then 'Apelación resuelta' when m.status='approved' then 'Propuesta aprobada' else 'Propuesta negada' end,secret||' · '||yes_count||' a favor / '||no_count||' en contra');
    return jsonb_build_object('ok',true,'status',m.status);
  elsif p_action in ('trash','restore') then
    kind=p_payload->>'type';new_id=(p_payload->>'id')::uuid;
