@@ -7,7 +7,9 @@ Página: https://josuegarza42.github.io/alpha-duenos/
 ## Qué permite
 
 - Acceso con una clave privada por socio, verificada en la base de datos.
-- Proponer mejoras de equipo, instalaciones, servicios y experiencia de los clientes en **Nuevas propuestas**, con descripción, beneficio y costo opcional, sin asignar roles.
+- Encontrar las decisiones pendientes en **Inicio → Tu siguiente paso**, con prioridad para los votos finales de discusiones y apelaciones.
+- Separar **Mejoras del gym** de **Funciones de socios**, cada una con sus apartados **Por votar**, **En discusión**, **Aprobadas** y **Negadas**.
+- Proponer mejoras de equipo, instalaciones, servicios, marketing o administración en **Mejoras del gym → Proponer mejora**, con área, descripción, beneficio y costo opcional.
 - Consultar **En discusión**, **Aprobadas** y **Negadas** con el contenido completo, los votos y los comentarios conservados. Las decisiones anteriores mantienen su resultado.
 - Apelar decisiones aprobadas o negadas con un motivo. La apelación abre una nueva discusión con votos independientes; dos votos coincidentes fijan el nuevo resultado. La decisión vigente se mantiene mientras se revisa, y todas las rondas anteriores siguen disponibles en el historial. Se evita abrir apelaciones duplicadas o de versiones superadas.
 - Proponer funciones con titular, área, frecuencia, alcance y entregable; distinguir obligaciones como socio, trabajo remunerado y apoyo puntual.
@@ -20,8 +22,9 @@ Página: https://josuegarza42.github.io/alpha-duenos/
 - Administrar las claves de los tres desde **Accesos**. Cada clave debe ser distinta y tener al menos seis caracteres; cambiarla invalida el enlace anterior y cierra las otras sesiones de ese socio.
 - Generar versiones inmutables del acuerdo, con votos y un PDF para imprimir y firmar a mano los tres. Debe existir al menos una función aprobada y no quedar votaciones o discusiones de funciones abiertas. Las mejoras del gimnasio se llevan por separado del acuerdo de responsabilidades. Descargar el PDF no lo marca como firmado.
 - Eliminar propuestas, funciones retiradas, registros de incumplimiento y acuerdos con una papelera recuperable. Las funciones vigentes se retiran mediante una propuesta aprobada; quitar una penalización acordada también se vota. Restaurar no reactiva funciones ni reabre votos. Eliminar un acuerdo no invalida documentos ya firmados.
-- Ver las funciones aprobadas y las propuestas pendientes en tres columnas, con una distinción visible de estado.
-- Filtrar las propuestas por responsable y ver cuántas tiene cada socio.
+- Consultar únicamente las funciones activas en **Funciones de socios → Vigentes**, organizadas por socio, con su detalle y propuestas de cambio.
+- Buscar sin distinguir acentos y filtrar por área, socio, voto pendiente o apelaciones. Las tarjetas resumen abren el contenido completo antes de votar.
+- Encontrar resultados e incumplimientos en **Seguimiento**, y el historial, papelera, accesos y respaldo en **Administración**.
 - Descargar un respaldo JSON sin claves ni sesiones, incluidos los elementos en papelera.
 
 ## Alojamiento
@@ -50,11 +53,13 @@ El plan gratuito de Supabase puede pausar proyectos inactivos; se reanudan desde
 ```sh
 npm ci --ignore-scripts
 npm test
+node --check site/board-model.js
 node --check site/app.js
+node --check site/tracking.js
 node --check site/pdf.js
 ```
 
-Las pruebas ejecutan el SQL de producción sin cambios en Postgres mediante PGlite, con la extensión real `pgcrypto` y el rol `anon`. Cubren identidad, permisos, unanimidad, discusión 2–1, comentarios, mayoría final, apelaciones de mejoras, funciones, cambios y retiros, restauración de versiones previas, propuestas de mejoras, voto único, cambios y retiros, cancelación, versiones inmutables y ausencia de credenciales en las exportaciones.
+Las pruebas ejecutan el SQL de producción sin cambios en Postgres mediante PGlite, con la extensión real `pgcrypto` y el rol `anon`. Cubren identidad, permisos, unanimidad, discusión 2–1, comentarios, mayoría final, apelaciones de mejoras, funciones, cambios y retiros, restauración de versiones previas, propuestas de mejoras, voto único, cambios y retiros, cancelación, versiones inmutables ausencia de credenciales en las exportaciones, categorías de mejoras y filtros de navegación sin modificar los registros.
 
 Si se cambiaron claves desde la web, actualizar primero el archivo local privado `.private/access.json` y regenerar los enlaces con `python3 tools/provision.py`. El administrador con los accesos locales vigentes puede ejecutar `npm run verify:live` para comprobar los tres accesos contra Supabase, el cierre de sesión y que el esquema privado no esté expuesto. Esta verificación no crea propuestas ni votos.
 

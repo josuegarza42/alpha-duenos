@@ -221,7 +221,7 @@ test("discussion records comments and needs two distinct final votes to approve"
   for(let n=0;n<2;n++)assert.equal((await call("resolve_discussion","josue",{motion_id:m.motion_id,value:"approve",reason:"Acordamos el alcance"})).status,"discussion");
   assert.equal((await call("state")).responsibilities[0].status,"proposed");
   assert.equal((await call("resolve_discussion","brandon",{motion_id:m.motion_id,value:"approve",reason:"De acuerdo con el alcance"})).status,"approved");
-  const state=await call("state"),motion=state.motions[0];assert.equal(state.responsibilities[0].status,"active");assert.equal(motion.votes.tono,"reject");assert.equal(motion.comments[0].partner,"tono");assert.equal(Object.keys(motion.resolution_votes).length,2);
+  const state=await call("state"),motion=state.motions[0];assert.equal(state.responsibilities[0].status,"active");assert.equal(motion.votes.tono,"reject");assert.equal(motion.comments.find(c=>c.body==="Acordemos un alcance menor")?.partner,"tono");assert.equal(Object.keys(motion.resolution_votes).length,2);
   assert.equal((await call("resolve_discussion","tono",{motion_id:m.motion_id,value:"reject",reason:"Llegó tarde"})).status,409);
   const a=await call("agreement"),saved=await call("agreement_data","josue",{agreement_id:a.id});
   assert.equal(saved.snapshot.responsibilities[0].approval.discussion.votes.tono,"reject");
@@ -346,4 +346,12 @@ test("appeal validation preserves sessions, author identity and closed decision 
 test("hidden decisions must be restored before appeal",async()=>{
   const m=await proposed();await finish(m,"reject",["josue","brandon"]);await call("trash","josue",{type:"responsibility",id:m.id});assert.equal((await appeal(m)).status,409);
   await call("restore","josue",{type:"responsibility",id:m.id});assert.ok((await appeal(m)).motion_id);
+});
+
+
+test("gym improvements keep their chosen category through votes and appeals",async()=>{
+  const {gymCategories}=require("../site/board-model.js");
+  for(const category of gymCategories){const m=await call("create_improvement","josue",improvement({category}));assert.ok(m.motion_id);await finish(m);const a=await appeal(m);assert.ok(a.motion_id);assert.equal((await call("state")).motions.find(x=>x.id===a.motion_id).payload.category,category);}
+  const legacy=await call("create_improvement","josue",improvement());assert.equal((await call("state")).motions.find(x=>x.id===legacy.motion_id).payload.category,"General");
+  for(const category of [null,42,"Desconocida",{}])assert.equal((await call("create_improvement","josue",improvement({category}))).status,400);
 });

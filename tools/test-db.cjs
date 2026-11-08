@@ -30,6 +30,16 @@ async function seedDemo(db){
   const tokens=await loginAll(db);
   const examples=[sample(),sample({title:"Coordinar la facturación SAT",owner:"brandon",category:"Fiscal",frequency:"Mensual y por solicitud",description:"Revisar las solicitudes y emitir las facturas correspondientes.",deliverable:"Facturas emitidas y relación de solicitudes atendidas."}),sample({title:"Revisar el equipo del gimnasio",owner:"tono",category:"Operación",frequency:"Semanal",description:"Detectar fallas y coordinar su atención.",deliverable:"Lista de revisión y reporte de mantenimiento."})];
   for(const value of examples){const m=await rpc(db,"create",tokens.josue,value);await rpc(db,"vote",tokens.josue,{motion_id:m.motion_id,value:"approve"});await rpc(db,"vote",tokens.brandon,{motion_id:m.motion_id,value:"approve"});await rpc(db,"vote",tokens.tono,{motion_id:m.motion_id,value:"approve"});}
+  // Preview-only scenarios make every decision stage available for UI checks.
+  const waiting=await rpc(db,"create",tokens.josue,sample({title:"Revisar el inventario de mantenimiento",owner:"tono",category:"Operación"}));
+  await rpc(db,"vote",tokens.brandon,{motion_id:waiting.motion_id,value:"approve"});
+  const discussion=await rpc(db,"create",tokens.josue,sample({title:"Coordinar las campañas de inscripción",owner:"brandon",category:"Marketing"}));
+  await rpc(db,"vote",tokens.josue,{motion_id:discussion.motion_id,value:"approve"});await rpc(db,"vote",tokens.brandon,{motion_id:discussion.motion_id,value:"approve"});await rpc(db,"vote",tokens.tono,{motion_id:discussion.motion_id,value:"reject"});
+  for(const [title,category,stage] of [["Renovar bicicletas de cardio","Equipo y mantenimiento","pending"],["Mejorar la ventilación de la sala","Instalaciones","discussion"],["Ampliar los horarios de fin de semana","Servicios y experiencia","rejected"]]){
+    const m=await rpc(db,"create_improvement",tokens.brandon,{title,category,description:"Revisar opciones y cotizaciones para mejorar la experiencia de los clientes.",benefit:"Más comodidad y disponibilidad del gimnasio.",budget:"Pendiente de cotización"});
+    if(stage==="discussion"){await rpc(db,"vote",tokens.josue,{motion_id:m.motion_id,value:"approve"});await rpc(db,"vote",tokens.brandon,{motion_id:m.motion_id,value:"approve"});await rpc(db,"vote",tokens.tono,{motion_id:m.motion_id,value:"reject"});}
+    if(stage==="rejected"){await rpc(db,"vote",tokens.brandon,{motion_id:m.motion_id,value:"reject"});await rpc(db,"vote",tokens.tono,{motion_id:m.motion_id,value:"reject"});}
+  }
   return tokens;
 }
 module.exports={openDatabase,rpc,loginAll,sample,seedDemo,schema,testKey};

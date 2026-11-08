@@ -244,7 +244,9 @@ begin
      or jsonb_typeof(p_payload->'benefit') is distinct from 'string' or char_length(btrim(p_payload->>'benefit')) not between 1 and 1200
      or (p_payload ? 'budget' and jsonb_typeof(p_payload->'budget') is distinct from 'string') or char_length(coalesce(p_payload->>'budget',''))>300 then
      return jsonb_build_object('error','Completa título, mejora y beneficio; presupuesto opcional de hasta 300 caracteres.','status',400); end if;
-   data=jsonb_build_object('title',btrim(p_payload->>'title'),'description',btrim(p_payload->>'description'),'benefit',btrim(p_payload->>'benefit'),'budget',btrim(coalesce(p_payload->>'budget','')));
+   if p_payload ? 'category' and (jsonb_typeof(p_payload->'category') is distinct from 'string' or p_payload->>'category' not in ('Equipo y mantenimiento','Instalaciones','Servicios y experiencia','Marketing y ventas','Administración y finanzas','General')) then
+     return jsonb_build_object('error','Selecciona un área válida para la mejora.','status',400); end if;
+   data=jsonb_build_object('title',btrim(p_payload->>'title'),'description',btrim(p_payload->>'description'),'benefit',btrim(p_payload->>'benefit'),'budget',btrim(coalesce(p_payload->>'budget','')),'category',coalesce(p_payload->>'category','General'));
    insert into alpha_private.motions(proposer,kind,payload) values(actor,'improvement',data) returning id into new_id;
    perform alpha_private.event(actor,'Mejora del gimnasio propuesta',data->>'title');
    return jsonb_build_object('motion_id',new_id);
