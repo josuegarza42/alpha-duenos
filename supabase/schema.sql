@@ -69,6 +69,31 @@ create table if not exists alpha_private.votes (
   updated_at timestamptz not null default now(),
   primary key(motion_id,partner)
 );
+-- Gym improvements share the decision workflow, without becoming partner roles.
+alter table alpha_private.motions alter column responsibility_id drop not null;
+alter table alpha_private.motions drop constraint if exists motions_kind_check;
+alter table alpha_private.motions add constraint motions_kind_check check(kind in ('create','edit','retire','improvement'));
+alter table alpha_private.motions drop constraint if exists motions_status_check;
+alter table alpha_private.motions add constraint motions_status_check check(status in ('pending','discussion','approved','rejected','cancelled'));
+alter table alpha_private.motions drop constraint if exists motions_subject_check;
+alter table alpha_private.motions add constraint motions_subject_check check((kind='improvement')=(responsibility_id is null));
+drop index if exists alpha_private.one_open_motion;
+create unique index one_open_motion on alpha_private.motions(responsibility_id) where status in ('pending','discussion');
+create table if not exists alpha_private.discussion_comments (
+  id uuid primary key default gen_random_uuid(),
+  motion_id uuid not null references alpha_private.motions(id),
+  partner text not null references alpha_private.partners(slug),
+  body text not null check(char_length(body) between 1 and 2100),
+  created_at timestamptz not null default now()
+);
+create table if not exists alpha_private.resolution_votes (
+  motion_id uuid not null references alpha_private.motions(id),
+  partner text not null references alpha_private.partners(slug),
+  value text not null check(value in ('approve','reject')),
+  reason text not null check(char_length(reason) between 1 and 2000),
+  updated_at timestamptz not null default now(),
+  primary key(motion_id,partner)
+);
 create table if not exists alpha_private.agreements (
   id uuid primary key default gen_random_uuid(), version int not null unique,
   revision bigint not null, digest text not null unique, snapshot jsonb not null,
@@ -94,6 +119,8 @@ alter table alpha_private.agreements enable row level security;
 alter table alpha_private.events enable row level security;
 alter table alpha_private.measurements enable row level security;
 alter table alpha_private.incidents enable row level security;
+alter table alpha_private.discussion_comments enable row level security;
+alter table alpha_private.resolution_votes enable row level security;
 revoke all on all tables in schema alpha_private from public,anon,authenticated;
 revoke all on all sequences in schema alpha_private from public,anon,authenticated;
 
@@ -135,15 +162,18 @@ language sql stable set search_path='' as $$
 $$;
 create or replace function alpha_private.motion_json(m alpha_private.motions) returns jsonb
 language sql stable set search_path='' as $$
- select jsonb_build_object('id',m.id,'responsibility_id',m.responsibility_id,'title',coalesce(m.payload->>'title',r.title),'proposer',m.proposer,'kind',m.kind,'payload',m.payload,'reason',m.reason,'status',m.status,'created_at',m.created_at,'decided_at',m.decided_at,'votes',coalesce((select jsonb_object_agg(v.partner,v.value) from alpha_private.votes v where v.motion_id=m.id),'{}'::jsonb)) from alpha_private.responsibilities r where r.id=m.responsibility_id;
+ select jsonb_build_object('id',m.id,'responsibility_id',m.responsibility_id,'title',coalesce(m.payload->>'title',(select r.title from alpha_private.responsibilities r where r.id=m.responsibility_id)),'proposer',m.proposer,'kind',m.kind,'payload',m.payload,'reason',m.reason,'status',m.status,'created_at',m.created_at,'decided_at',m.decided_at,
+ 'votes',coalesce((select jsonb_object_agg(v.partner,v.value) from alpha_private.votes v where v.motion_id=m.id),'{}'::jsonb),
+ 'resolution_votes',coalesce((select jsonb_object_agg(v.partner,v.value) from alpha_private.resolution_votes v where v.motion_id=m.id),'{}'::jsonb),
+ 'comments',coalesce((select jsonb_agg(to_jsonb(c) order by c.created_at,c.id) from alpha_private.discussion_comments c where c.motion_id=m.id),'[]'::jsonb));
 $$;
 
 create or replace function alpha_private.snapshot() returns jsonb
 language sql stable set search_path='' as $$
- select jsonb_build_object('name','Alpha Dueños','rule','Mayoría de dos de tres socios',
+ select jsonb_build_object('name','Alpha Dueños','rule','Tres a favor aprueban; dos a favor y uno en contra abren discusión; dos votos finales resuelven',
  'partners',(select jsonb_agg(jsonb_build_object('slug',p.slug,'name',p.name,'role','admin') order by case p.slug when 'josue' then 1 when 'brandon' then 2 else 3 end) from alpha_private.partners p),
  'responsibilities',coalesce((select jsonb_agg((alpha_private.responsibility_json(r)-'updated_at')||jsonb_build_object('approval',(
-   select jsonb_build_object('motion_id',m.id,'date',m.decided_at,'votes',(select jsonb_object_agg(v.partner,v.value) from alpha_private.votes v where v.motion_id=m.id))
+   select jsonb_build_object('motion_id',m.id,'date',m.decided_at,'votes',case when exists(select 1 from alpha_private.resolution_votes v where v.motion_id=m.id) then (select jsonb_object_agg(v.partner,v.value) from alpha_private.resolution_votes v where v.motion_id=m.id) else (select jsonb_object_agg(v.partner,v.value) from alpha_private.votes v where v.motion_id=m.id) end,'discussion',alpha_private.motion_json(m))
    from alpha_private.motions m where m.responsibility_id=r.id and m.status='approved' and m.kind in ('create','edit') order by m.decided_at desc,m.created_at desc limit 1
  )) order by r.owner,r.title,r.id) from alpha_private.responsibilities r where r.status='active' and r.deleted_at is null),'[]'::jsonb));
 $$;
@@ -178,7 +208,7 @@ begin
    return jsonb_build_object('revision',rev,'me',(select jsonb_build_object('slug',p.slug,'name',p.name,'role','admin') from alpha_private.partners p where p.slug=actor),
      'partners',(select jsonb_agg(jsonb_build_object('slug',p.slug,'name',p.name,'role','admin') order by case p.slug when 'josue' then 1 when 'brandon' then 2 else 3 end) from alpha_private.partners p),
      'responsibilities',coalesce((select jsonb_agg(alpha_private.responsibility_json(r0) order by r0.created_at,r0.id) from alpha_private.responsibilities r0 where r0.deleted_at is null),'[]'::jsonb),
-     'motions',coalesce((select jsonb_agg(alpha_private.motion_json(m0) order by m0.created_at desc,m0.id) from alpha_private.motions m0 join alpha_private.responsibilities r0 on r0.id=m0.responsibility_id where r0.deleted_at is null),'[]'::jsonb),
+     'motions',coalesce((select jsonb_agg(alpha_private.motion_json(m0) order by m0.created_at desc,m0.id) from alpha_private.motions m0 left join alpha_private.responsibilities r0 on r0.id=m0.responsibility_id where r0.deleted_at is null),'[]'::jsonb),
      'agreements',coalesce((select jsonb_agg(jsonb_build_object('id',a0.id,'version',a0.version,'created_at',a0.created_at,'digest',a0.digest,'count',jsonb_array_length(a0.snapshot->'responsibilities')) order by a0.version desc) from alpha_private.agreements a0 where a0.deleted_at is null),'[]'::jsonb),
      'events',coalesce((select jsonb_agg(to_jsonb(e) order by e.id desc) from (select e0.id,p.name actor,e0.action,e0.detail,e0.created_at from alpha_private.events e0 join alpha_private.partners p on p.slug=e0.actor order by e0.id desc limit 120) e),'[]'::jsonb),
      'measurements',coalesce((select jsonb_agg(to_jsonb(x) order by x.created_at desc,x.id) from alpha_private.measurements x),'[]'::jsonb),
@@ -188,7 +218,17 @@ begin
        union all select 'incident',id,title,status,deleted_at from alpha_private.incidents where deleted_at is not null
        union all select 'agreement',id,'Acuerdo v'||version,'snapshot',deleted_at from alpha_private.agreements where deleted_at is not null
      ) x),'[]'::jsonb),
-     'rule',jsonb_build_object('threshold',2,'partners',3,'signatures','handwritten'));
+     'rule',jsonb_build_object('threshold',3,'discussion_threshold',2,'rejection_threshold',2,'partners',3,'signatures','handwritten'));
+ elsif p_action='create_improvement' then
+   if jsonb_typeof(p_payload->'title') is distinct from 'string' or char_length(btrim(p_payload->>'title')) not between 1 and 120
+     or jsonb_typeof(p_payload->'description') is distinct from 'string' or char_length(btrim(p_payload->>'description')) not between 1 and 2000
+     or jsonb_typeof(p_payload->'benefit') is distinct from 'string' or char_length(btrim(p_payload->>'benefit')) not between 1 and 1200
+     or (p_payload ? 'budget' and jsonb_typeof(p_payload->'budget') is distinct from 'string') or char_length(coalesce(p_payload->>'budget',''))>300 then
+     return jsonb_build_object('error','Completa título, mejora y beneficio; presupuesto opcional de hasta 300 caracteres.','status',400); end if;
+   data=jsonb_build_object('title',btrim(p_payload->>'title'),'description',btrim(p_payload->>'description'),'benefit',btrim(p_payload->>'benefit'),'budget',btrim(coalesce(p_payload->>'budget','')));
+   insert into alpha_private.motions(proposer,kind,payload) values(actor,'improvement',data) returning id into new_id;
+   perform alpha_private.event(actor,'Mejora del gimnasio propuesta',data->>'title');
+   return jsonb_build_object('motion_id',new_id);
  elsif p_action='create' then
    data=alpha_private.payload(p_payload);
    insert into alpha_private.responsibilities(title,description,owner,category,frequency,deliverable,scope,penalty,metric) values(data->>'title',data->>'description',data->>'owner',data->>'category',data->>'frequency',data->>'deliverable',data->>'scope',data->>'penalty',nullif(data->'metric','null'::jsonb)) returning * into r;
@@ -198,7 +238,7 @@ begin
  elsif p_action='motion' then
    select * into r from alpha_private.responsibilities where id=(p_payload->>'responsibility_id')::uuid and deleted_at is null;
    if not found then return jsonb_build_object('error','La función no está disponible.','status',404); end if;
-   if r.status<>'active' or exists(select 1 from alpha_private.motions where responsibility_id=r.id and status='pending') then return jsonb_build_object('error','La función no está aprobada o ya tiene una votación abierta.','status',409); end if;
+   if r.status<>'active' or exists(select 1 from alpha_private.motions where responsibility_id=r.id and status in ('pending','discussion')) then return jsonb_build_object('error','La función no está aprobada o ya tiene una votación abierta.','status',409); end if;
    kind=p_payload->>'kind';reason=btrim(coalesce(p_payload->>'reason',''));
    if kind is null or kind not in ('edit','retire') or reason='' or char_length(reason)>1000 then return jsonb_build_object('error','Selecciona cambio o retiro y explica el motivo (máximo 1000 caracteres).','status',400); end if;
    data=case when kind='edit' then alpha_private.payload(p_payload->'payload') else '{}'::jsonb end;
@@ -206,30 +246,58 @@ begin
    insert into alpha_private.motions(responsibility_id,proposer,kind,payload,reason) values(r.id,actor,kind,data,reason) returning id into new_id;
    perform alpha_private.event(actor,case when kind='edit' then 'Cambio propuesto' else 'Retiro propuesto' end,r.title);
    return jsonb_build_object('motion_id',new_id);
- elsif p_action in ('vote','cancel') then
+ elsif p_action in ('vote','cancel','comment','resolve_discussion') then
    select * into m from alpha_private.motions where id=(p_payload->>'motion_id')::uuid;
    if not found then return jsonb_build_object('error','La propuesta no está disponible.','status',404); end if;
-   if m.status<>'pending' then return jsonb_build_object('error','Esta votación ya terminó.','status',409); end if;
-   select * into r from alpha_private.responsibilities where id=m.responsibility_id;
+   if m.status not in ('pending','discussion') then return jsonb_build_object('error','Esta votación ya terminó.','status',409); end if;
+   if m.responsibility_id is not null then
+     select * into r from alpha_private.responsibilities where id=m.responsibility_id and deleted_at is null;
+     if not found then return jsonb_build_object('error','La función no está disponible.','status',404); end if;
+   end if;
+   secret=coalesce(m.payload->>'title',r.title);
    if p_action='cancel' then
+     if m.status='discussion' then return jsonb_build_object('error','Resuelvan la discusión con una votación final.','status',409); end if;
      update alpha_private.motions set status='cancelled',decided_at=now() where id=m.id;
      if m.kind='create' then update alpha_private.responsibilities set status='cancelled',updated_at=now() where id=r.id; end if;
-     perform alpha_private.event(actor,'Propuesta cancelada',r.title);
+     perform alpha_private.event(actor,'Propuesta cancelada',secret);
      return jsonb_build_object('ok',true);
+   end if;
+   if p_action in ('comment','resolve_discussion') then
+     if m.status<>'discussion' then return jsonb_build_object('error','Esta propuesta no está en discusión.','status',409); end if;
+     reason=btrim(coalesce(p_payload->>'reason',''));
+     if jsonb_typeof(p_payload->'reason') is distinct from 'string' or char_length(reason) not between 1 and 2000 then return jsonb_build_object('error','Escribe el comentario o motivo de tu decisión (hasta 2000 caracteres).','status',400); end if;
+     if p_action='comment' then
+       insert into alpha_private.discussion_comments(motion_id,partner,body) values(m.id,actor,reason);
+       perform alpha_private.event(actor,'Comentario de discusión',secret);
+       return jsonb_build_object('ok',true);
+     end if;
+   elsif m.status<>'pending' then return jsonb_build_object('error','Los votos iniciales se conservan. Vota el resultado de la discusión.','status',409);
    end if;
    v=p_payload->>'value';
    if v is null or v not in ('approve','reject') then return jsonb_build_object('error','El voto debe ser a favor o en contra.','status',400); end if;
-   insert into alpha_private.votes(motion_id,partner,value) values(m.id,actor,v) on conflict(motion_id,partner) do update set value=excluded.value,updated_at=now();
-   perform alpha_private.event(actor,case when v='approve' then 'Voto a favor' else 'Voto en contra' end,r.title);
-   select count(*) filter(where value='approve'),count(*) filter(where value='reject') into yes_count,no_count from alpha_private.votes where motion_id=m.id;
-   if yes_count>=2 or no_count>=2 then
-     m.status=case when yes_count>=2 then 'approved' else 'rejected' end;
-     update alpha_private.motions set status=m.status,decided_at=now() where id=m.id;
-     if yes_count>=2 and m.kind='retire' then update alpha_private.responsibilities set status='retired',updated_at=now() where id=r.id;
-     elsif yes_count>=2 then update alpha_private.responsibilities set title=m.payload->>'title',description=m.payload->>'description',owner=m.payload->>'owner',category=m.payload->>'category',frequency=m.payload->>'frequency',deliverable=m.payload->>'deliverable',scope=m.payload->>'scope',penalty=coalesce(m.payload->>'penalty',''),metric=nullif(m.payload->'metric','null'::jsonb),status='active',updated_at=now() where id=r.id;
-     elsif m.kind='create' then update alpha_private.responsibilities set status='rejected',updated_at=now() where id=r.id; end if;
-     perform alpha_private.event(actor,case when yes_count>=2 then 'Propuesta aprobada' else 'Propuesta rechazada' end,r.title||' · '||yes_count||' a favor / '||no_count||' en contra');
+   if p_action='resolve_discussion' then
+     insert into alpha_private.resolution_votes(motion_id,partner,value,reason) values(m.id,actor,v,reason) on conflict(motion_id,partner) do update set value=excluded.value,reason=excluded.reason,updated_at=now();
+     insert into alpha_private.discussion_comments(motion_id,partner,body) values(m.id,actor,(case when v='approve' then 'Voto final a favor: ' else 'Voto final en contra: ' end)||reason);
+     perform alpha_private.event(actor,'Voto final de discusión',secret);
+     select count(*) filter(where value='approve'),count(*) filter(where value='reject') into yes_count,no_count from alpha_private.resolution_votes where motion_id=m.id;
+     if yes_count<2 and no_count<2 then return jsonb_build_object('ok',true,'status','discussion'); end if;
+   else
+     insert into alpha_private.votes(motion_id,partner,value) values(m.id,actor,v) on conflict(motion_id,partner) do update set value=excluded.value,updated_at=now();
+     perform alpha_private.event(actor,case when v='approve' then 'Voto a favor' else 'Voto en contra' end,secret);
+     select count(*) filter(where value='approve'),count(*) filter(where value='reject') into yes_count,no_count from alpha_private.votes where motion_id=m.id;
+     if yes_count=2 and no_count=1 then
+       update alpha_private.motions set status='discussion' where id=m.id;
+       perform alpha_private.event(actor,'Propuesta en discusión',secret||' · 2 a favor / 1 en contra');
+       return jsonb_build_object('ok',true,'status','discussion');
+     end if;
+     if yes_count<3 and no_count<2 then return jsonb_build_object('ok',true,'status','pending'); end if;
    end if;
+   m.status=case when yes_count>=2 then 'approved' else 'rejected' end;
+   update alpha_private.motions set status=m.status,decided_at=now() where id=m.id;
+   if m.status='approved' and m.kind='retire' then update alpha_private.responsibilities set status='retired',updated_at=now() where id=r.id;
+   elsif m.status='approved' and m.kind in ('create','edit') then update alpha_private.responsibilities set title=m.payload->>'title',description=m.payload->>'description',owner=m.payload->>'owner',category=m.payload->>'category',frequency=m.payload->>'frequency',deliverable=m.payload->>'deliverable',scope=m.payload->>'scope',penalty=coalesce(m.payload->>'penalty',''),metric=nullif(m.payload->'metric','null'::jsonb),status='active',updated_at=now() where id=r.id;
+   elsif m.status='rejected' and m.kind='create' then update alpha_private.responsibilities set status='rejected',updated_at=now() where id=r.id; end if;
+   perform alpha_private.event(actor,case when m.status='approved' then 'Propuesta aprobada' else 'Propuesta negada' end,secret||' · '||yes_count||' a favor / '||no_count||' en contra');
    return jsonb_build_object('ok',true,'status',m.status);
  elsif p_action in ('trash','restore') then
    kind=p_payload->>'type';new_id=(p_payload->>'id')::uuid;
@@ -238,7 +306,7 @@ begin
      select * into r from alpha_private.responsibilities where id=new_id;
      if not found then return jsonb_build_object('error','La función no está disponible.','status',404); end if;
      if (p_action='trash' and r.deleted_at is not null) or (p_action='restore' and r.deleted_at is null) then return jsonb_build_object('error','El elemento ya cambió. Actualiza la página.','status',409); end if;
-     if p_action='trash' and r.status='active' then return jsonb_build_object('error','Primero propongan el retiro de la función vigente y reúnan dos votos a favor.','status',409); end if;
+     if p_action='trash' and (r.status='active' or exists(select 1 from alpha_private.motions where responsibility_id=r.id and status='discussion')) then return jsonb_build_object('error','Resuelvan la discusión o aprueben el retiro de la función antes de enviarla a papelera.','status',409); end if;
      if p_action='trash' then
        update alpha_private.motions set status='cancelled',decided_at=now() where responsibility_id=r.id and status='pending';
        update alpha_private.responsibilities set status=case when status='proposed' then 'cancelled' else status end,deleted_at=now() where id=r.id;
@@ -292,7 +360,7 @@ begin
    perform alpha_private.event(actor,'Clave de acceso cambiada',(select name from alpha_private.partners where slug=v));
    return jsonb_build_object('ok',true);
  elsif p_action='agreement' then
-   if exists(select 1 from alpha_private.motions where status='pending') then return jsonb_build_object('error','Resuelvan o cancelen las votaciones abiertas antes de generar el acuerdo final.','status',409); end if;
+   if exists(select 1 from alpha_private.motions where responsibility_id is not null and status in ('pending','discussion')) then return jsonb_build_object('error','Resuelvan las votaciones y discusiones de funciones antes de generar el acuerdo final.','status',409); end if;
    snap=alpha_private.snapshot();
    if jsonb_array_length(snap->'responsibilities')=0 then return jsonb_build_object('error','Primero aprueben al menos una responsabilidad.','status',409); end if;
    digest_value=encode(extensions.digest(snap::text,'sha256'),'hex');

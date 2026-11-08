@@ -29,7 +29,7 @@ const sample=(overrides={})=>({title:"Preparar el corte mensual",description:"Re
 async function seedDemo(db){
   const tokens=await loginAll(db);
   const examples=[sample(),sample({title:"Coordinar la facturación SAT",owner:"brandon",category:"Fiscal",frequency:"Mensual y por solicitud",description:"Revisar las solicitudes y emitir las facturas correspondientes.",deliverable:"Facturas emitidas y relación de solicitudes atendidas."}),sample({title:"Revisar el equipo del gimnasio",owner:"tono",category:"Operación",frequency:"Semanal",description:"Detectar fallas y coordinar su atención.",deliverable:"Lista de revisión y reporte de mantenimiento."})];
-  for(const value of examples){const m=await rpc(db,"create",tokens.josue,value);await rpc(db,"vote",tokens.josue,{motion_id:m.motion_id,value:"approve"});await rpc(db,"vote",tokens.brandon,{motion_id:m.motion_id,value:"approve"});}
+  for(const value of examples){const m=await rpc(db,"create",tokens.josue,value);await rpc(db,"vote",tokens.josue,{motion_id:m.motion_id,value:"approve"});await rpc(db,"vote",tokens.brandon,{motion_id:m.motion_id,value:"approve"});await rpc(db,"vote",tokens.tono,{motion_id:m.motion_id,value:"approve"});}
   return tokens;
 }
 module.exports={openDatabase,rpc,loginAll,sample,seedDemo,schema,testKey};

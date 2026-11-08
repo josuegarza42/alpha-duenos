@@ -6,12 +6,12 @@ let db,tokens;
 before(async()=>{db=await openDatabase();});
 after(async()=>{await db?.close();});
 beforeEach(async()=>{
-  await db.exec("truncate alpha_private.sessions,alpha_private.events,alpha_private.votes,alpha_private.agreements,alpha_private.motions,alpha_private.responsibilities restart identity cascade; update alpha_private.board set revision=0;");
+  await db.exec("truncate alpha_private.sessions,alpha_private.events,alpha_private.discussion_comments,alpha_private.resolution_votes,alpha_private.votes,alpha_private.agreements,alpha_private.motions,alpha_private.responsibilities restart identity cascade; update alpha_private.board set revision=0;");
   tokens=await loginAll(db);
 });
 const call=(action,actor="josue",payload={})=>rpc(db,action,tokens[actor],payload);
 async function proposed(payload=sample()){return call("create","josue",payload);}
-async function active(){const m=await proposed();await call("vote","josue",{motion_id:m.motion_id,value:"approve"});await call("vote","brandon",{motion_id:m.motion_id,value:"approve"});return m;}
+async function active(){const m=await proposed();await call("vote","josue",{motion_id:m.motion_id,value:"approve"});await call("vote","brandon",{motion_id:m.motion_id,value:"approve"});await call("vote","tono",{motion_id:m.motion_id,value:"approve"});return m;}
 test("login rejects wrong keys; state requires a personal session",async()=>{
   assert.equal((await rpc(db,"login","",{key:"incorrect-but-long-enough-key"})).status,401);
   assert.equal((await rpc(db,"state")).status,401);
@@ -28,6 +28,8 @@ test("proposing is not a vote; the same partner cannot create a majority",async(
   for(let n=0;n<2;n++)await call("vote","josue",{motion_id:m.motion_id,value:"approve"});
   state=await call("state");assert.equal(state.motions[0].status,"pending");assert.equal(state.responsibilities[0].status,"proposed");assert.equal(Object.keys(state.motions[0].votes).length,1);
   await call("vote","brandon",{motion_id:m.motion_id,value:"approve"});
+  state=await call("state");assert.equal(state.motions[0].status,"pending");assert.equal(state.responsibilities[0].status,"proposed");
+  await call("vote","tono",{motion_id:m.motion_id,value:"approve"});
   state=await call("state");assert.equal(state.motions[0].status,"approved");assert.equal(state.responsibilities[0].status,"active");
   assert.equal((await call("vote","tono",{motion_id:m.motion_id,value:"reject"})).status,409);
 });
@@ -42,11 +44,11 @@ test("all three admins may cancel proposals; history and votes remain",async()=>
   assert.equal((await call("cancel","brandon",{motion_id:m.motion_id})).ok,true);
   const state=await call("state");assert.equal(state.motions[0].status,"cancelled");assert.equal(state.motions[0].votes.tono,"approve");assert.equal(state.responsibilities[0].status,"cancelled");assert.ok(state.events.some(e=>e.action==="Propuesta cancelada"));
 });
-test("changes and reassignments take effect only after two approvals",async()=>{
+test("changes and reassignments take effect only after three approvals",async()=>{
   const m=await active();const edit=await call("motion","tono",{responsibility_id:m.id,kind:"edit",payload:sample({owner:"brandon",frequency:"Semanal"}),reason:"Repartir el trabajo"});assert.ok(edit.motion_id);
   assert.equal((await call("state")).responsibilities[0].owner,"josue");
   assert.equal((await call("motion","tono",{responsibility_id:m.id,kind:"retire",reason:"Otra propuesta"})).status,409);
-  await call("vote","tono",{motion_id:edit.motion_id,value:"approve"});await call("vote","josue",{motion_id:edit.motion_id,value:"approve"});
+  await call("vote","tono",{motion_id:edit.motion_id,value:"approve"});await call("vote","josue",{motion_id:edit.motion_id,value:"approve"});await call("vote","brandon",{motion_id:edit.motion_id,value:"approve"});
   const r=(await call("state")).responsibilities[0];assert.equal(r.owner,"brandon");assert.equal(r.frequency,"Semanal");
 });
 test("rejected edits retain the original responsibility",async()=>{
@@ -54,20 +56,20 @@ test("rejected edits retain the original responsibility",async()=>{
   await call("vote","josue",{motion_id:edit.motion_id,value:"reject"});await call("vote","brandon",{motion_id:edit.motion_id,value:"reject"});
   assert.equal((await call("state")).responsibilities[0].title,sample().title);
 });
-test("retirement remains pending until a two-person majority",async()=>{
+test("retirement remains pending until all three approve",async()=>{
   const m=await active();const retire=await call("motion","brandon",{responsibility_id:m.id,kind:"retire",reason:"La función ya no aplica"});
   await call("vote","brandon",{motion_id:retire.motion_id,value:"approve"});assert.equal((await call("state")).responsibilities[0].status,"active");
-  await call("vote","tono",{motion_id:retire.motion_id,value:"approve"});assert.equal((await call("state")).responsibilities[0].status,"retired");
+  await call("vote","tono",{motion_id:retire.motion_id,value:"approve"});assert.equal((await call("state")).responsibilities[0].status,"active");await call("vote","josue",{motion_id:retire.motion_id,value:"approve"});assert.equal((await call("state")).responsibilities[0].status,"retired");
 });
 test("agreements require active functions and no open votes",async()=>{
   assert.equal((await call("agreement")).status,409);const m=await proposed();assert.equal((await call("agreement")).status,409);
-  await call("vote","josue",{motion_id:m.motion_id,value:"approve"});await call("vote","brandon",{motion_id:m.motion_id,value:"approve"});assert.equal((await call("agreement")).version,1);
+  await call("vote","josue",{motion_id:m.motion_id,value:"approve"});await call("vote","brandon",{motion_id:m.motion_id,value:"approve"});await call("vote","tono",{motion_id:m.motion_id,value:"approve"});assert.equal((await call("agreement")).version,1);
 });
 test("agreement versions are immutable, include votes and avoid duplicates",async()=>{
   const m=await active();const a=await call("agreement");assert.deepEqual(await call("agreement","brandon"),a);
   const original=await call("agreement_data","josue",{agreement_id:a.id});assert.equal(original.snapshot.responsibilities[0].approval.votes.brandon,"approve");
   const edit=await call("motion","tono",{responsibility_id:m.id,kind:"edit",payload:sample({owner:"tono"}),reason:"Nuevo reparto"});
-  await call("vote","josue",{motion_id:edit.motion_id,value:"approve"});await call("vote","tono",{motion_id:edit.motion_id,value:"approve"});
+  await call("vote","josue",{motion_id:edit.motion_id,value:"approve"});await call("vote","tono",{motion_id:edit.motion_id,value:"approve"});await call("vote","brandon",{motion_id:edit.motion_id,value:"approve"});
   assert.equal((await call("agreement")).version,2);assert.deepEqual(await call("agreement_data","tono",{agreement_id:a.id}),original);
 });
 test("validates fields, vote values, nonexistent IDs and no-op edits",async()=>{
@@ -97,7 +99,7 @@ test("metric and penalty terms require a majority and stay fixed in past agreeme
   const edit=await call("motion","tono",{responsibility_id:m.id,kind:"edit",reason:"Ajustar la medición",payload:changed});
   await call("vote","tono",{motion_id:edit.motion_id,value:"approve"});
   assert.equal((await call("state")).responsibilities[0].penalty,sample().penalty);
-  await call("vote","brandon",{motion_id:edit.motion_id,value:"approve"});
+  await call("vote","brandon",{motion_id:edit.motion_id,value:"approve"});await call("vote","josue",{motion_id:edit.motion_id,value:"approve"});
   assert.deepEqual((await call("state")).responsibilities[0].metric,changed.metric);
   assert.deepEqual(await call("agreement_data","josue",{agreement_id:a.id}),old);
 });
@@ -110,7 +112,7 @@ test("measurements preserve the target, owner, author and correction history",as
   assert.ok(entries.some(e=>e.actual===95.5));
   for(const e of entries){assert.equal(e.owner,"josue");assert.equal(e.actor,"brandon");assert.deepEqual(e.metric,sample().metric);}
   const edit=await call("motion","josue",{responsibility_id:m.id,kind:"edit",reason:"Cambiar titular y meta",payload:sample({owner:"tono",metric:{...sample().metric,target:90}})});
-  await call("vote","josue",{motion_id:edit.motion_id,value:"approve"});await call("vote","tono",{motion_id:edit.motion_id,value:"approve"});
+  await call("vote","josue",{motion_id:edit.motion_id,value:"approve"});await call("vote","tono",{motion_id:edit.motion_id,value:"approve"});await call("vote","brandon",{motion_id:edit.motion_id,value:"approve"});
   entries=(await call("backup")).measurements;assert.equal(entries.length,2);assert.equal(entries[0].metric.target,100);assert.equal(entries[0].owner,"josue");
 });
 test("incident tracking preserves agreed penalty and records admin resolution",async()=>{
@@ -132,7 +134,7 @@ test("tracking validates terms, values, dates and active status",async()=>{
 });
 test("optional terms are compatible with older proposals",async()=>{
   const payload=sample();delete payload.penalty;delete payload.metric;
-  const m=await proposed(payload);await call("vote","josue",{motion_id:m.motion_id,value:"approve"});await call("vote","brandon",{motion_id:m.motion_id,value:"approve"});
+  const m=await proposed(payload);await call("vote","josue",{motion_id:m.motion_id,value:"approve"});await call("vote","brandon",{motion_id:m.motion_id,value:"approve"});await call("vote","tono",{motion_id:m.motion_id,value:"approve"});
   const r=(await call("state")).responsibilities[0];assert.equal(r.penalty,"");assert.equal(r.metric,null);
   assert.equal((await call("measure","tono",{responsibility_id:m.id,period:"Mes",actual:1})).status,409);
   assert.equal((await call("incident","tono",{responsibility_id:m.id,occurred_on:"2026-01-01",detail:"Sin acuerdo"})).status,409);
@@ -164,17 +166,17 @@ test("active functions cannot bypass majority by deletion; retired functions res
   const m=await active();assert.equal((await call("trash","brandon",{type:"responsibility",id:m.id})).status,409);
   const retire=await call("motion","brandon",{responsibility_id:m.id,kind:"retire",reason:"Ya no aplica"});
   await call("vote","brandon",{motion_id:retire.motion_id,value:"approve"});assert.equal((await call("trash","tono",{type:"responsibility",id:m.id})).status,409);
-  await call("vote","tono",{motion_id:retire.motion_id,value:"approve"});
+  await call("vote","tono",{motion_id:retire.motion_id,value:"approve"});assert.equal((await call("state")).responsibilities[0].status,"active");await call("vote","josue",{motion_id:retire.motion_id,value:"approve"});
   assert.equal((await call("trash","tono",{type:"responsibility",id:m.id})).ok,true);
   assert.equal((await call("restore","josue",{type:"responsibility",id:m.id})).ok,true);
   assert.equal((await call("state")).responsibilities[0].status,"retired");
 });
-test("penalty removal requires two votes and preserves earlier agreements and incidents",async()=>{
+test("penalty removal requires three votes and preserves earlier agreements and incidents",async()=>{
   const m=await active(),a=await call("agreement"),original=await call("agreement_data","josue",{agreement_id:a.id});
   await call("incident","tono",{responsibility_id:m.id,occurred_on:"2026-01-01",detail:"Pendiente de revisión"});
   const edit=await call("motion","tono",{responsibility_id:m.id,kind:"edit",payload:sample({penalty:""}),reason:"Quitar penalización"});
   await call("vote","tono",{motion_id:edit.motion_id,value:"approve"});assert.equal((await call("state")).responsibilities[0].penalty,sample().penalty);
-  await call("vote","brandon",{motion_id:edit.motion_id,value:"approve"});assert.equal((await call("state")).responsibilities[0].penalty,"");
+  await call("vote","brandon",{motion_id:edit.motion_id,value:"approve"});await call("vote","josue",{motion_id:edit.motion_id,value:"approve"});assert.equal((await call("state")).responsibilities[0].penalty,"");
   assert.equal((await call("state")).incidents[0].penalty,sample().penalty);assert.deepEqual(await call("agreement_data","josue",{agreement_id:a.id}),original);
 });
 test("incident deletion preserves evidence and resolution; hidden incidents cannot be resolved",async()=>{
@@ -194,4 +196,79 @@ test("agreement deletion and regeneration restore the identical version and snap
   assert.deepEqual(await call("agreement_data","josue",{agreement_id:a.id}),original);
   assert.equal((await call("trash","josue",{type:"unknown",id:a.id})).status,400);
   assert.equal((await call("restore","josue",{type:"agreement",id:a.id})).status,409);
+});
+
+const improvement=(overrides={})=>({title:"Renovar bicicletas de cardio",description:"Sustituir las bicicletas que ya fallan.",benefit:"Más equipos disponibles y mejor experiencia.",budget:"Pendiente de cotización",...overrides});
+async function split(m,actors=["josue","brandon","tono"]){
+  for(const actor of actors)assert.equal((await call("vote",actor,{motion_id:m.motion_id,value:actor==="tono"?"reject":"approve"})).ok,true);
+}
+test("2–1 enters discussion in every vote order and preserves the proposed function",async()=>{
+  for(const actors of [["josue","brandon","tono"],["tono","josue","brandon"],["josue","tono","brandon"]]){
+    const m=await proposed(sample({title:actors.join(" ")}));await split(m,actors);
+    const state=await call("state"),motion=state.motions.find(x=>x.id===m.motion_id);
+    assert.equal(motion.status,"discussion");assert.equal(motion.decided_at,null);assert.deepEqual(motion.votes,{josue:"approve",brandon:"approve",tono:"reject"});
+    assert.equal(state.responsibilities.find(x=>x.id===m.id).status,"proposed");assert.ok(!state.trash.length);
+    assert.equal((await call("trash","josue",{type:"responsibility",id:m.id})).status,409);
+    assert.equal((await call("cancel","josue",{motion_id:m.motion_id})).status,409);
+    assert.equal((await call("vote","tono",{motion_id:m.motion_id,value:"approve"})).status,409);
+  }
+});
+test("discussion records comments and needs two distinct final votes to approve",async()=>{
+  const m=await proposed();await split(m);
+  assert.equal((await call("agreement")).status,409);
+  assert.equal((await call("comment","tono",{motion_id:m.motion_id,reason:""})).status,400);
+  assert.equal((await call("comment","tono",{motion_id:m.motion_id,reason:"Acordemos un alcance menor",partner:"josue"})).ok,true);
+  for(let n=0;n<2;n++)assert.equal((await call("resolve_discussion","josue",{motion_id:m.motion_id,value:"approve",reason:"Acordamos el alcance"})).status,"discussion");
+  assert.equal((await call("state")).responsibilities[0].status,"proposed");
+  assert.equal((await call("resolve_discussion","brandon",{motion_id:m.motion_id,value:"approve",reason:"De acuerdo con el alcance"})).status,"approved");
+  const state=await call("state"),motion=state.motions[0];assert.equal(state.responsibilities[0].status,"active");assert.equal(motion.votes.tono,"reject");assert.equal(motion.comments[0].partner,"tono");assert.equal(Object.keys(motion.resolution_votes).length,2);
+  assert.equal((await call("resolve_discussion","tono",{motion_id:m.motion_id,value:"reject",reason:"Llegó tarde"})).status,409);
+  const a=await call("agreement"),saved=await call("agreement_data","josue",{agreement_id:a.id});
+  assert.equal(saved.snapshot.responsibilities[0].approval.discussion.votes.tono,"reject");
+  assert.equal(saved.snapshot.responsibilities[0].approval.votes.brandon,"approve");
+});
+test("a discussion can be denied and final votes can change while open",async()=>{
+  const m=await proposed();await split(m);
+  await call("resolve_discussion","josue",{motion_id:m.motion_id,value:"approve",reason:"Inicialmente a favor"});
+  await call("resolve_discussion","josue",{motion_id:m.motion_id,value:"reject",reason:"El costo es excesivo"});
+  assert.equal((await call("resolve_discussion","tono",{motion_id:m.motion_id,value:"reject",reason:"No conviene"})).status,"rejected");
+  const state=await call("state");assert.equal(state.responsibilities[0].status,"rejected");assert.equal(state.motions[0].comments.length,3);assert.equal(state.trash.length,0);
+});
+test("changes in discussion keep the current role and prevent competing motions",async()=>{
+  const m=await active(),edit=await call("motion","brandon",{responsibility_id:m.id,kind:"edit",payload:sample({owner:"tono"}),reason:"Nuevo reparto"});
+  await split(edit);assert.equal((await call("state")).responsibilities[0].owner,"josue");
+  assert.equal((await call("motion","tono",{responsibility_id:m.id,kind:"retire",reason:"Compite"})).status,409);
+  assert.equal((await call("agreement")).status,409);
+  await call("resolve_discussion","josue",{motion_id:edit.motion_id,value:"approve",reason:"Reparto acordado"});
+  await call("resolve_discussion","tono",{motion_id:edit.motion_id,value:"approve",reason:"Acepto"});
+  assert.equal((await call("state")).responsibilities[0].owner,"tono");
+});
+test("gym improvements do not create roles, metrics, penalties or block role agreements",async()=>{
+  await active();const m=await call("create_improvement","brandon",improvement({owner:"tono",scope:"Como socio"}));assert.ok(m.motion_id);
+  let state=await call("state");assert.equal(state.responsibilities.length,1);assert.equal(state.motions.find(x=>x.id===m.motion_id).kind,"improvement");assert.equal(state.motions.find(x=>x.id===m.motion_id).payload.owner,undefined);
+  assert.equal((await call("agreement")).version,1);
+  await split(m);state=await call("state");assert.equal(state.motions.find(x=>x.id===m.motion_id).status,"discussion");
+  await call("comment","tono",{motion_id:m.motion_id,reason:"Cotizar primero"});
+  await call("resolve_discussion","tono",{motion_id:m.motion_id,value:"approve",reason:"Costo confirmado"});
+  assert.equal((await call("resolve_discussion","brandon",{motion_id:m.motion_id,value:"approve",reason:"Presupuesto viable"})).status,"approved");
+  const backup=await call("backup"),motion=backup.motions.find(x=>x.id===m.motion_id);assert.equal(motion.comments.length,3);assert.equal(motion.resolution_votes.tono,"approve");assert.equal(backup.responsibilities.length,1);
+});
+test("gym improvements support unanimous approval, denial and cancellation",async()=>{
+  for(const expected of ["approved","rejected","cancelled"]){
+    const m=await call("create_improvement","josue",improvement());
+    if(expected==="cancelled")await call("cancel","brandon",{motion_id:m.motion_id});
+    else for(const actor of expected==="approved"?["josue","brandon","tono"]:["tono","josue"])await call("vote",actor,{motion_id:m.motion_id,value:expected==="approved"?"approve":"reject"});
+    assert.equal((await call("state")).motions.find(x=>x.id===m.motion_id).status,expected);
+  }
+  assert.equal((await call("state")).responsibilities.length,0);
+});
+test("validates gym improvements, discussion actions, and private discussion tables",async()=>{
+  for(const overrides of [{title:" "},{description:42},{benefit:""},{budget:"x".repeat(301)}])assert.equal((await call("create_improvement","josue",improvement(overrides))).status,400);
+  const m=await call("create_improvement","josue",improvement());
+  assert.equal((await call("comment","josue",{motion_id:m.motion_id,reason:"Fuera de discusión"})).status,409);
+  await split(m);
+  for(const payload of [{value:"approve",reason:" "},{value:"invalid",reason:"Motivo"},{value:"approve",reason:42}])assert.equal((await call("resolve_discussion","josue",{motion_id:m.motion_id,...payload})).status,400);
+  assert.equal((await rpc(db,"comment","",{motion_id:m.motion_id,reason:"Anónimo"})).status,401);
+  for(const table of ["discussion_comments","resolution_votes"])await assert.rejects(db.transaction(async tx=>{await tx.exec("set local role anon");await tx.query(`select * from alpha_private.${table}`);}),/permission denied/);
+  await db.exec(schema());assert.equal((await call("state")).motions[0].status,"discussion");
 });

@@ -30,12 +30,12 @@ window.buildAlphaPdf=async function(agreement){
   text("Acuerdo de responsabilidades",{size:22,bold:true,after:4,lineHeight:10});
   const stamp=new Intl.DateTimeFormat("es-MX",{dateStyle:"long",timeStyle:"short",timeZone:"America/Mexico_City"}).format(new Date(agreement.created_at));
   text(`Versión ${agreement.version} · ${stamp}, Ciudad de México`,{size:8,color:muted,after:4});rule();
-  text("Este documento reúne las responsabilidades operativas aprobadas por mayoría de dos de los tres socios. Cada función indica su titular, frecuencia, entregable, métrica y penalización acordada, cuando corresponda.");
+  text("Este documento reúne las responsabilidades operativas aprobadas por los socios. Las nuevas decisiones requieren tres votos a favor o dos votos finales a favor después de una discusión. Cada función indica su titular, frecuencia, entregable, métrica y penalización acordada, cuando corresponda.");
   text("Este ejemplar está pendiente de la firma manuscrita de los tres socios. Las firmas corresponden exclusivamente a esta versión y a las responsabilidades que contiene.");
   text(`Identificador de versión: ${agreement.digest.slice(0,16)}`,{size:8,color:muted,after:4});
   function taskParts(r,number){
     const votes=r.approval?.votes||{};const yes=Object.entries(votes).filter(([,v])=>v==="approve").map(([s])=>names[s]).join(", ");const no=Object.entries(votes).filter(([,v])=>v==="reject").map(([s])=>names[s]).join(", ");const pending=data.partners.filter(p=>!votes[p.slug]).map(p=>p.name).join(", ");
-    let approval=`A favor: ${yes}.`;if(no)approval+=` En contra: ${no}.`;if(pending)approval+=` Sin voto registrado al cierre: ${pending}.`;
+    let approval=`${Object.keys(r.approval?.discussion?.resolution_votes||{}).length?"Votación final tras discusión. ":""}A favor: ${yes}.`;if(no)approval+=` En contra: ${no}.`;if(pending)approval+=` Sin voto registrado al cierre: ${pending}.`;
     return [
       [`${String(number).padStart(2,"0")}. ${r.title}`,{size:10,bold:true,after:2}],
       [`${r.category} · ${r.scope}`,{size:7.5,color:muted,after:2}],
